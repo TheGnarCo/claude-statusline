@@ -38,8 +38,25 @@ Colors honor [`NO_COLOR`](https://no-color.org) and degrade to a 256-color ramp 
 terminals without truecolor (`COLORTERM`); the ASCII pip shapes keep the bars legible even
 with color off entirely.
 
-`subagent-statusline.sh` renders the agent-panel task line (one jq pass; integer token
-counts like `12k`).
+## The subagent statusline
+
+`subagent-statusline.sh` is the second export of this repo, and a peer of the main
+statusline rather than an add-on. It drives Claude Code's **agent panel** — the per-task
+rows shown for spawned subagents — and is wired separately, via `subagentStatusLine`.
+
+It reads Claude Code's subagent JSON on stdin and emits `{"tasks":[...]}` on stdout in a
+single `jq` pass (no per-task subshell, `awk`, or `date` forks). Per task it reports:
+
+- **`state`** — `success` / `error` / `inactive`, mapped from the reported status.
+  `complete`, `completed`, `succeeded`, `success` → `success`; `failed`, `error` → `error`;
+  `inactive`, `idle` → `inactive`; anything else (i.e. still running) → `success`.
+- **`elapsed`** — `30s` / `2m05s` / `1h02m`, compacted to `30s` / `2m` / `1h` when the
+  panel is narrow (`columns < 100`).
+- **`tokenText`** — integer abbreviation, no decimals or float math: `42` / `12k` / `1M`.
+
+Output keys are emitted sorted, so the JSON is deterministic and diffable. Malformed or
+non-object input — and a missing `jq` — degrade to an empty panel (`{"tasks":[]}`) rather
+than an error, on the same "must never fail" principle as the main statusline.
 
 ## Requirements
 
@@ -101,6 +118,18 @@ after an intentional change.
 ## Provenance
 
 Seeded from [`alxjrvs/claude-statusline`](https://github.com/alxjrvs/claude-statusline)
-at `7107dc5`, with permission of its author. That repo remains a **personal** statusline
-and this one is not a fork of it — the two are free to diverge, and no sync is implied in
-either direction. Good fixes may be cherry-picked by hand when they suit both.
+at `7107dc5`, by its author.
+
+The difference between the two repos is **ownership, not features**. That one is one
+person's statusline, shaped to one person's taste. This one is **owned collectively by
+The Gnar Company** going forward — anyone here can change it, and it evolves by whatever
+the team decides it should show.
+
+So the two will diverge, but not from a spec written up front: they diverge because
+different people steer them. Nothing is synced in either direction, and there is
+deliberately no drift check between them. Cherry-pick by hand when a fix genuinely suits
+both.
+
+## License
+
+[MIT](./LICENSE) © The Gnar Company, Inc.
