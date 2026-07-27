@@ -42,10 +42,17 @@ Practical consequences:
 ## Relationship to alxjrvs/claude-statusline
 
 Seeded from [`alxjrvs/claude-statusline`](https://github.com/alxjrvs/claude-statusline)
-at `7107dc5`. It is **not** a fork: that repo is a personal statusline, this one is a Gnar
-product, and they are expected to diverge. Do not add sync tooling or drift checks between
-them, and don't assume a change there belongs here. Cherry-pick by hand when a fix
-genuinely suits both.
+at `7107dc5`. It is **not** a fork, and the distinction that matters is **ownership, not
+features**: that repo is one person's statusline, this one is owned collectively by The
+Gnar Company and evolves by whatever the team decides it should show.
+
+Practical consequences:
+
+- **Don't treat the personal repo as upstream.** No sync tooling, no drift checks, and a
+  change there does not imply a change here. Cherry-pick by hand when a fix suits both.
+- **Don't defend the current layout as canonical.** It is the seed, not a spec. Anyone at
+  Gnar can propose changing what it shows; "that's how the original did it" is not a
+  reason to keep something.
 
 ## Test / lint locally
 
