@@ -239,6 +239,123 @@ assert "width: line 1 fits COLUMNS-CHROME_MARGIN (worst-case groups)" "$l1_budge
 # ...and the elision is visible rather than a silent drop: locks the '..' marker.
 snapshot line1-shed 60 "$P_L1_MAX"
 
+# ── All seven counters: the git group's squeeze path ────────────────────────
+# The fixtures above carry only "?1 !1", so ct_width stays 6 and the name-squeeze
+# block never runs — the git group's core logic had ZERO coverage, which is how a
+# silent counter drop shipped. This fixture carries all seven at once, which needs
+# a real upstream (ahead/behind), a stash, and a conflicted merge:
+#
+#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#
+# The invariant under test is priority, not just width: inside one unsplittable
+# bracket a counter is atomic data while the names ellipsize, so EVERY counter
+# must survive at every width — the branch shrinks, then the worktree suffix is
+# dropped, before a counter is ever shed. A dropped ^N/vN reads as "in sync with
+# upstream" when you are not, which is worse than a truncated name.
+COUNTERS=$(mktemp -d) BARE=$(mktemp -d) CLONE=$(mktemp -d)
+trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE"' EXIT
+tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+(
+  git init -q --bare "$BARE/claude-statusline.git"
+  cd "$COUNTERS" || exit 2
+  git init -q
+  git checkout -q -b feature/some-really-long-branch-name
+  for i in 1 2 3 4; do echo "l$i" > "f$i.txt"; done
+  tg add .
+  tg commit -q --no-verify -m init
+  tg remote add origin "$BARE/claude-statusline.git"
+  tg push -q -u origin HEAD
+  # ahead: local commits the remote hasn't seen
+  for i in 1 2 3; do
+    echo "a$i" >> f1.txt
+    tg commit -q --no-verify -am "ahead$i"
+  done
+  # behind: a second clone pushes, then we fetch (never merge those)
+  git clone -q "$BARE/claude-statusline.git" "$CLONE/c"
+  cd "$CLONE/c" || exit 2
+  git checkout -q feature/some-really-long-branch-name
+  for i in 1 2; do
+    echo "r$i" >> f4.txt
+    tg commit -q --no-verify -am "remote$i"
+  done
+  tg push -q origin HEAD
+  cd "$COUNTERS" || exit 2
+  tg fetch -q origin
+  # stash x2
+  echo s1 > f2.txt && tg stash push -q -m s1
+  echo s2 > f2.txt && tg stash push -q -m s2
+  # conflict: merge the diverged upstream and leave the UU in the index
+  echo mine >> f4.txt
+  tg commit -q --no-verify -am mine
+  tg merge -q origin/feature/some-really-long-branch-name
+  # staged, modified, untracked
+  echo st > f2.txt && tg add f2.txt
+  echo mo >> f3.txt
+  : > untracked1.txt
+  : > untracked2.txt
+) > /dev/null 2>&1 || {
+  printf 'FAIL     all-counters git fixture setup\n'
+  FAIL=$((FAIL + 1))
+}
+cd "$COUNTERS" || exit 2
+
+# Sanity-check the fixture itself: if it stopped producing all seven counters the
+# assertions below would pass vacuously (the bug this suite exists to catch).
+P_CT='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+ct_line=$(run_sl 200 "$P_CT" | strip_ansi | line1_block)
+missing=""
+for sig in '*' x '?' '!' + '^' v; do
+  case "$ct_line" in *"$sig"[0-9]*) ;; *) missing="$missing$sig" ;; esac
+done
+[ -n "$missing" ] && printf 'note: fixture missing counters: %s\n' "$missing"
+assert "fixture: all seven counters present at full width" "$([ -z "$missing" ] && echo 0 || echo 1)"
+
+# Two assertions, because "no counter is ever shed" is not achievable at every
+# width and claiming it would be a lie: seven counters are 21 columns on their
+# own, so at COLUMNS=30 (22 usable) they cannot fit beside even a floored branch
+# — something must go. What IS invariant is the ORDER things go in.
+#
+#   1. Down to COLUMNS=40, every counter survives (the names absorb it).
+#   2. At ANY width, a counter is shed only AFTER the names have already given up
+#      everything they can: no worktree suffix, and the branch at its 5-char
+#      floor. That is the priority rule itself, and it holds where (1) can't.
+ct_dropped=0 ct_overflow=0
+for w in 40 44 48 57 60 80 120; do
+  out=$(run_sl "$w" "$P_CT" | strip_ansi | line1_block)
+  for sig in '*' x '?' '!' + '^' v; do
+    case "$out" in *"$sig"[0-9]*) ;; *) ct_dropped=1 ;; esac
+  done
+  max=$(printf '%s\n' "$out" | widest_line)
+  [ "$max" -gt $((w - L1_MARGIN)) ] && ct_overflow=1
+done
+assert "git group: no counter shed down to COLUMNS=40 (all 7)" "$ct_dropped"
+assert "git group: line 1 fits its budget with all 7 counters" "$ct_overflow"
+
+# Priority rule at the widths where shedding IS forced: the names must be spent
+# first. Extract the branch member "@<branch>[/<wt>]" and require no "/" (the
+# worktree suffix dropped) and a branch at the 5-char floor whenever a counter
+# went missing.
+ct_priority=0 ct_forced=0
+for w in 24 26 30 34 36 38; do
+  out=$(run_sl "$w" "$P_CT" | strip_ansi | line1_block)
+  shed=0
+  for sig in '*' x '?' '!' + '^' v; do
+    case "$out" in *"$sig"[0-9]*) ;; *) shed=1 ;; esac
+  done
+  [ "$shed" -eq 0 ] && continue
+  ct_forced=1
+  bmem=$(printf '%s\n' "$out" | sed -n 's/.*\[@\([^] ]*\).*/\1/p' | head -1)
+  case "$bmem" in
+    *'/'*) ct_priority=1 ;; # worktree still shown while a counter was dropped
+  esac
+  [ "${#bmem}" -gt 5 ] && ct_priority=1 # branch not squeezed to its floor
+done
+assert "git group: names are spent before any counter is shed" "$ct_priority"
+assert "git group: the forced-shed widths are actually exercised" "$((1 - ct_forced))"
+
+# Locks the squeeze: at 40 the worktree suffix is gone but every counter remains.
+snapshot line1-counters 40 "$P_CT"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

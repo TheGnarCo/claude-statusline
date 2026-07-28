@@ -606,6 +606,11 @@ gflush() {
     # happens to be shorter would drop a higher-priority member while keeping a
     # lower-priority one, and would put the trailing '..' after a member that was
     # never elided — the marker has to mean "everything past here is missing".
+    #
+    # The cost of that is real and accepted: a short low-priority member can be
+    # dropped while columns sit unused, because including it would mean skipping
+    # the longer higher-priority member in front of it. A predictable prefix and a
+    # marker that means one thing beat packing 1 more char into the row.
     if [ "$budget" -ge 0 ] && [ -n "$plain" ] &&
       [ $((${#plain} + sep + ${#_gm_plain[i]})) -gt "$budget" ]; then
       elided=1
@@ -666,27 +671,39 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   b=$branch
   [ -z "$b" ] && b="-"
 
-  # Name budgets, squeezed to leave the counters room: row minus "[]", the "@",
-  # the counters, and the "/" a worktree adds. Floor at 5 because trunc_mid
-  # declines to ellipsize below that (it would return the name untouched and
-  # overrun anyway); at an absurdly narrow width the group can still exceed the
-  # row, exactly as the per-field layout did.
+  # Name budgets, squeezed to leave the counters room: `avail` is the row minus
+  # "[]", the "@", and the counters — i.e. what the names may occupy, including
+  # the "/" a worktree adds. Floor at 5 because trunc_mid declines to ellipsize
+  # below that (it would hand back the name untouched and overrun anyway).
+  #
+  # When even both floors won't fit, the WORKTREE SUFFIX IS DROPPED rather than a
+  # counter: "/wt" restates which checkout this is — something the pane's own
+  # title and the branch already imply — whereas losing ^N/vN reads as "in sync
+  # with upstream" when you are not. Squeeze the branch, then drop the worktree,
+  # and only then let gflush's tail-shed touch a counter.
   b_max=$branch_max
   w_max=$wt_max
+  show_wt=0
+  [ -n "$wt" ] && show_wt=1
   if [ -n "$cols" ]; then
     avail=$((cols - 3 - ct_width))
-    [ -n "$wt" ] && avail=$((avail - 1))
-    if [ -n "$wt" ]; then
-      if [ $((b_max + w_max)) -gt "$avail" ]; then
-        w_max=$((avail * 2 / 5))
-        [ "$w_max" -lt 5 ] && w_max=5
-        b_max=$((avail - w_max))
-        [ "$b_max" -lt 5 ] && b_max=5
+    if [ "$show_wt" -eq 1 ]; then
+      if [ $((b_max + 1 + w_max)) -gt "$avail" ]; then
+        if [ "$avail" -ge 11 ]; then # 5 + "/" + 5
+          w_max=$((avail * 2 / 5))
+          [ "$w_max" -lt 5 ] && w_max=5
+          b_max=$((avail - 1 - w_max))
+          [ "$b_max" -lt 5 ] && b_max=5
+        else
+          show_wt=0
+          b_max=$avail
+        fi
       fi
-    elif [ "$b_max" -gt "$avail" ]; then
-      b_max=$avail
-      [ "$b_max" -lt 5 ] && b_max=5
     fi
+    if [ "$show_wt" -eq 0 ] && [ "$b_max" -gt "$avail" ]; then
+      b_max=$avail
+    fi
+    [ "$b_max" -lt 5 ] && b_max=5
   fi
 
   # Truncate the *displayed* text only; the hyperlink target keeps the full ref.
@@ -697,7 +714,7 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
     b_disp=$b_txt
   fi
   b_plain="${SIG_BRANCH}${b_txt}"
-  if [ -n "$wt" ]; then
+  if [ "$show_wt" -eq 1 ]; then
     wt_txt=$(trunc_mid "$wt" "$w_max")
     b_disp="${b_disp}${MAGENTA}/${wt_txt}"
     b_plain="${b_plain}/${wt_txt}"
