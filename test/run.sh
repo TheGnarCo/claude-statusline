@@ -38,6 +38,17 @@ run_sl() {
     bash "$SCRIPT" <<< "$2"
 }
 
+# run_sl_256 <cols> <payload> — run_sl with COLORTERM cleared, to exercise the
+# indexed-ramp path. Same pinned env, which is the point: an ambient NO_COLOR in
+# the developer's shell must not make a *color* assertion fail for the wrong
+# reason (NO_COLOR is one this repo's own users plausibly export).
+run_sl_256() {
+  COLUMNS=$1 HOME=/home/tester COLORTERM='' TERM=xterm-256color \
+    NO_COLOR='' CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' \
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='' CLAUDE_STATUSLINE_CHROME_MARGIN='' \
+    bash "$SCRIPT" <<< "$2"
+}
+
 # snapshot <name> <cols> <payload> — compare ANSI-stripped output to golden.
 snapshot() {
   local name=$1 cols=$2 payload=$3
@@ -127,7 +138,7 @@ case "$out_nocolor" in *"420k/1M"*) c=0 ;; *) c=1 ;; esac
 assert "NO_COLOR: content intact" "$c"
 
 # Non-truecolor terminals get the 256-color ramp (38;5;) not truecolor (38;2;).
-out_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color bash "$SCRIPT" <<< "$P_NORMAL")
+out_256=$(run_sl_256 120 "$P_NORMAL")
 case "$out_256" in *"${esc}[38;5;"*) c=0 ;; *) c=1 ;; esac
 assert "256-color: uses indexed ramp" "$c"
 case "$out_256" in *"${esc}[38;2;"*) c=1 ;; *) c=0 ;; esac
@@ -172,7 +183,7 @@ assert "fable: landmark absent from the CTX bar" "$?"
 # still green — the same one-of-two-paths gap as the priority rule below.
 case "$(run_sl 120 "$P_SEVEN_BINDING")" in *"${esc}[38;2;214;122;255m"*) c=0 ;; *) c=1 ;; esac
 assert "fable: landmark colored on the truecolor path" "$c"
-fable_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color bash "$SCRIPT" <<< "$P_SEVEN_BINDING")
+fable_256=$(run_sl_256 120 "$P_SEVEN_BINDING")
 case "$fable_256" in *"${esc}[38;5;177m"*) c=0 ;; *) c=1 ;; esac
 assert "fable: landmark colored on the 256 ramp" "$c"
 
