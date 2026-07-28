@@ -34,10 +34,27 @@ Practical consequences:
 - **Tag releases deliberately.** A merge to `main` reaches nobody until someone bumps the
   pin in agent-skills. That is the intended review gate — don't try to make the plugin
   track `main`.
-- **The plugin's command prose is coupled to this layout.** `/gnar-statusline`'s Customize
-  mode names specific lines and specific blocks in `statusline.sh`. If you add, remove, or
-  reorder an emitted line, the corresponding agent-skills PR has to rewrite that command,
-  not just move the pin. Say so in the PR description here.
+- **The plugin's command is install-only and does NOT describe this layout.** It fetches the
+  pinned scripts, wires both keys, verifies, and links this repo for what they render — it
+  says outright "Don't restate its contents here or narrate the segments to the user". There
+  is no Customize mode and no segment inventory: agent-skills `#422`/`#424` removed both, and
+  its changelog links a `v1.0.0...v1.1.0` compare rather than re-listing cells. So a layout
+  change here needs the **pin moved and nothing rewritten** on that side.
+
+  This entry used to claim the opposite, and that stale claim got repeated as outstanding
+  debt across several PRs here before anyone checked. Check rather than trust it:
+
+  ```sh
+  gh api repos/TheGnarCo/agent-skills/contents/toolkit/commands/gnar-statusline.md \
+    --jq .content | base64 -d | grep -niE 'customize|counters group|vim-mode chip|model group'
+  ```
+
+  If that returns nothing, the command is layout-agnostic and only the pin matters.
+
+  This is about the command's *prose* only. There is a real behavioural coupling to
+  agent-skills — the telem-tag chip has to agree with that plugin's detection hook — and it
+  has its own entry below. Don't read this bullet as "nothing on that side ever needs
+  touching".
 
 ## Relationship to alxjrvs/claude-statusline
 
