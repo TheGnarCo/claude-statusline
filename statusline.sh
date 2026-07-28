@@ -113,8 +113,12 @@ MIN_PIP_COUNT=12 # keep the bar readable on a narrow pane (and >1 for the gradie
 CHROME_MARGIN=8
 
 # Fable 5 is included on Max / Team Premium up to 50% of the *weekly* usage
-# limit; past that, Fable usage draws pay-as-you-go extra-usage credits at API
-# rates. Mark that boundary on the 7d bar so it isn't a surprise.
+# limit; past that, Fable usage draws pay-as-you-go extra-usage credits. Mark
+# that boundary on the 7d bar so it isn't a surprise.
+#
+# Max / Team Premium only. Plans that are pay-as-you-go for Fable from the start
+# have no included-Fable boundary, so the cell means nothing there — and the
+# payload doesn't say which plan you're on, so it renders regardless.
 #
 # LANDMARK, NOT A CUTOVER. The 7d bar tracks all-model usage, while the cap
 # applies only to Fable-attributed usage — so the cell means "if this week's

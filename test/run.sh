@@ -184,6 +184,19 @@ assert "fable: yields its cell to the clock pip" "$?"
 case "$collide_bar" in *'|'*) c=0 ;; *) c=1 ;; esac
 assert "fable: ...and the clock pip renders there instead" "$c"
 
+# ...and the other half of the priority rule: projection also outranks the
+# landmark. Needs its own payload, since the clock case above pins proj to 120%
+# (overflow, last cell) and never contends for cell 50. At 20% used with 60% of
+# the window left the clock is 40% and the projection is 20*100/40 = 50 — landing
+# the '*' exactly on the landmark cell, again for any bar width.
+SIXTY_PCT_7D=$(($(date +%s) + 6048 * 60))
+P_PROJ_COLLIDE='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":20,"resets_at":'"$SIXTY_PCT_7D"'}}}'
+proj_bar=$(bar_of "$(run_sl 120 "$P_PROJ_COLLIDE" | strip_ansi)" 7d)
+fable_absent "$proj_bar"
+assert "fable: yields its cell to the projection pip" "$?"
+case "$proj_bar" in *'*'*) c=0 ;; *) c=1 ;; esac
+assert "fable: ...and the projection pip renders there instead" "$c"
+
 # ── Width discipline: no line may exceed COLUMNS ─────────────────────────────
 # The bars stretch to fill the row, so the width math must reserve room for each
 # line's *trailing* text (the CTX token/cache/AC/200k+ readout is the widest and
