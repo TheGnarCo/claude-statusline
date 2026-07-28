@@ -7,14 +7,14 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
 # Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff style vim]
+#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff vim style]
 #           — identity + config folded onto one row of colored [] groups, ONE
 #           GROUP PER CONCEPT: git state, then this session, then this config.
 #           Groups pack left-to-right and wrap to a continuation line only when
 #           they won't fit the pane. No PR chip — Claude Code surfaces the PR.
 #           Members are space-separated inside their []; git counters are colored
 #           ASCII sigils:
-#           *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#           x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
 #   Line 2: CTX <bar w/ amber autocompact cell> N% Nk/Nk cache N% N%->AC [200k+]
 #   Line 3: 5h  <bar> N% Xh Ym left [delta]   (+ inline "7d N%" when 7d hidden)
 #   Line 4: 7d  <bar> N% Xd Yh left [delta]   (shown only when 7d is binding)
@@ -518,6 +518,16 @@ if [ -n "$cols" ]; then
   [ "$branch_max" -lt 14 ] && branch_max=14
   wt_max=$((cols / 5))
   [ "$wt_max" -lt 8 ] && wt_max=8
+  # The 14-col floor above can exceed the row itself on a very narrow pane, and
+  # branch_max is the cap on every group's FIRST member — the one gflush can never
+  # shed. Unclamped, a group could overrun the row on its first member alone
+  # (a session name rendered 19 cols into a 14-col budget at COLUMNS=22). Hold
+  # back 5: 2 for the brackets and 3 for the " .." a shed group appends. Only
+  # binds below ~COLUMNS 27, where cols/3 is under the floor anyway.
+  if [ $((cols - 5)) -lt "$branch_max" ]; then
+    branch_max=$((cols - 5))
+    [ "$branch_max" -lt 5 ] && branch_max=5
+  fi
 else
   branch_max=40
   wt_max=24
@@ -576,9 +586,10 @@ gadd() {
 # but grouping sums them (a long session name + big churn + a big cost now share
 # a bracket), so the ceiling has to be enforced here: an over-wide group sheds
 # its lowest-priority members and marks the elision with '..'. The first member
-# is always kept, and each group's first member is separately budget-capped
-# (branch_max / wt_max for git, branch_max for the session name and the model),
-# so what survives always fits.
+# is always kept, so it carries its own cap: branch_max/wt_max clamped to `avail`
+# for git, branch_max for the session name and the model — and branch_max is
+# itself clamped to cols-5 (see its floor), without which a group could overrun
+# the row on its unsheddable first member alone.
 gflush() {
   local n=${#_gm_plain[@]}
   [ "$n" -eq 0 ] && return
@@ -601,16 +612,31 @@ gflush() {
   for ((i = 0; i < n; i++)); do
     sep=0
     [ -n "$plain" ] && sep=1
+    # break, not continue: members were added in priority order, so once one
+    # doesn't fit, everything after it goes too. Skipping ahead to whatever
+    # happens to be shorter would drop a higher-priority member while keeping a
+    # lower-priority one, and would put the trailing '..' after a member that was
+    # never elided — the marker has to mean "everything past here is missing".
+    #
+    # The cost of that is real and accepted: a short low-priority member can be
+    # dropped while columns sit unused, because including it would mean skipping
+    # the longer higher-priority member in front of it. A predictable prefix and a
+    # marker that means one thing beat packing 1 more char into the row.
     if [ "$budget" -ge 0 ] && [ -n "$plain" ] &&
       [ $((${#plain} + sep + ${#_gm_plain[i]})) -gt "$budget" ]; then
       elided=1
-      continue
+      break
     fi
     if [ "$sep" -eq 1 ]; then disp="${disp} " plain="${plain} "; fi
     disp="${disp}${_gm_disp[i]}" plain="${plain}${_gm_plain[i]}"
   done
   if [ "$elided" -eq 1 ]; then
-    disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
+    # Best-effort: an unmarked elision is bad, but overrunning the row is worse
+    # (that is the wrap CHROME_MARGIN exists to prevent). Only reachable when the
+    # unsheddable first member already fills the row.
+    if [ -z "$cols" ] || [ $((${#plain} + 5)) -le "$cols" ]; then
+      disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
+    fi
   fi
 
   add_seg "${MUTED}[${RST}${disp}${MUTED}]${RST}" $((2 + ${#plain}))
@@ -626,37 +652,124 @@ gflush() {
 # Counters are colored ASCII sigils (untracked cyan, modified yellow, staged
 # green, conflict bold-red, stash magenta, ahead green, behind red) — the glyph +
 # count is ~4x denser than "N untracked, N modified, …". Sigils:
-#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#   x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
 
 # Worktree name (Claude's payload first, else the git worktree dir basename).
 wt=$worktree_name_input
 [ -z "$wt" ] && wt=$git_worktree_name
 
+# Collect the counters BEFORE the branch, so their width is known while the
+# branch/worktree budgets are still being chosen. Inside one bracket the two
+# compete for the row, and they are not equally sheddable: a counter is atomic
+# data (dropping x1 or *3 misreports the tree as conflict-free or stash-free)
+# while a branch name is designed to be ellipsized. So the NAMES yield to the
+# counters, never the reverse — with separate brackets the packer used to wrap
+# the counters onto a continuation line, and shedding them instead would lose
+# state the split layout kept.
+# Order is MOST URGENT FIRST, and that is load-bearing rather than cosmetic:
+# gflush sheds from the tail, so display order *is* shed order. A mid-merge
+# conflict and unpushed/unpulled commits are the states you cannot afford to miss
+# (they change what you should do next); a stash count is the one you can. So the
+# tail — stash, untracked — is what a too-narrow pane gives up, and x/^/v are the
+# last to go. Leftmost is also nearest the branch it qualifies.
+_ct_disp=() _ct_plain=()
+ctadd() {
+  _ct_disp[${#_ct_disp[@]}]=$1
+  _ct_plain[${#_ct_plain[@]}]=$2
+}
+[ "$conflict" -gt 0 ] && ctadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
+[ "$ahead" -gt 0 ] && ctadd "${GREEN}^${ahead}${RST}" "^${ahead}"
+[ "$behind" -gt 0 ] && ctadd "${RED}v${behind}${RST}" "v${behind}"
+[ "$unstaged" -gt 0 ] && ctadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
+[ "$staged" -gt 0 ] && ctadd "${GREEN}+${staged}${RST}" "+${staged}"
+[ "$untracked" -gt 0 ] && ctadd "${CYAN}?${untracked}${RST}" "?${untracked}"
+[ "$stash" -gt 0 ] && ctadd "${MAGENTA}*${stash}${RST}" "*${stash}"
+
+nct=${#_ct_plain[@]}
+ct_width=0
+for ((ci = 0; ci < nct; ci++)); do ct_width=$((ct_width + 1 + ${#_ct_plain[ci]})); done
+
 if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   b=$branch
   [ -z "$b" ] && b="-"
+
+  # Name budgets. `avail` is the row minus "[]", the "@", and the counters — what
+  # the names may occupy, including the "/" a worktree adds.
+  #
+  # Sized from what each name ACTUALLY NEEDS (its own length, capped by its share
+  # of the pane), never from the 5-col floor: budgeting by the floor threw away a
+  # 2-char worktree suffix that had room to spare, and handed the worktree a flat
+  # 40% it didn't need while over-truncating the branch. Order of yielding, most
+  # expendable last to arrive: shrink the branch -> shrink the worktree -> drop
+  # the worktree suffix -> and only then let gflush's tail-shed reach a counter.
+  # The suffix goes before any counter because it restates which checkout this is,
+  # which the pane title and branch already imply, while a missing counter
+  # misreports the tree. Floor at 5 because trunc_mid declines to ellipsize below
+  # that (it would hand the name back untouched and overrun anyway).
+  b_max=$branch_max
+  w_max=$wt_max
+  show_wt=0
+  [ -n "$wt" ] && show_wt=1
+  if [ -n "$cols" ]; then
+    avail=$((cols - 3 - ct_width))
+
+    want_b=${#b}
+    [ "$want_b" -gt "$b_max" ] && want_b=$b_max
+    want_w=0
+    if [ "$show_wt" -eq 1 ]; then
+      want_w=${#wt}
+      [ "$want_w" -gt "$w_max" ] && want_w=$w_max
+    fi
+    need=$want_b
+    [ "$show_wt" -eq 1 ] && need=$((need + 1 + want_w))
+
+    # The suffix is shown only when it costs the branch NOTHING — i.e. both names
+    # fit at the lengths they want. That is not a stylistic choice, it is the only
+    # rule that keeps the BRANCH monotonic in pane width: showing "/wt" costs
+    # 1+len(wt) columns, so any width at which the suffix starts appearing would
+    # otherwise SHORTEN the branch by that much versus one column narrower. (An
+    # earlier version squeezed both and pinned the branch at its floor to keep the
+    # suffix, which is exactly how widening a pane could shorten the branch.)
+    #
+    # The branch is monotonic; the SUFFIX is not, and it cannot be made so here.
+    # `need` is capped by branch_max (cols/3) and wt_max (cols/5), so where both
+    # step — cols divisible by 15 — need grows by 2 while avail grows by 1 and the
+    # suffix drops out for exactly one column (shown at COLUMNS 52, gone at 53,
+    # back at 54, with a long branch and a >=9-char worktree). Periods 3 and 5
+    # collide every 15 columns whatever the caps are; letting the branch absorb the
+    # difference instead just moves the 1-column artifact onto branch length, which
+    # is the more informative cell. Bounded and asserted in test/run.sh: the suffix
+    # never vanishes for more than one consecutive column.
+    # Below that, the suffix is dropped and the whole budget goes to the branch —
+    # one readable branch beats two mangled names, and it is the branch the
+    # counters qualify.
+    if [ "$need" -le "$avail" ]; then
+      b_max=$want_b w_max=$want_w
+    else
+      show_wt=0
+      b_max=$want_b
+      [ "$b_max" -gt "$avail" ] && b_max=$avail
+    fi
+    [ "$b_max" -lt 5 ] && b_max=5
+  fi
+
   # Truncate the *displayed* text only; the hyperlink target keeps the full ref.
-  b_txt=$(trunc_mid "$b" "$branch_max")
+  b_txt=$(trunc_mid "$b" "$b_max")
   if [ -n "$repo_https" ] && [ -n "$branch" ]; then
     b_disp=$(osc8 "$repo_https/tree/$branch" "$b_txt")
   else
     b_disp=$b_txt
   fi
   b_plain="${SIG_BRANCH}${b_txt}"
-  if [ -n "$wt" ]; then
-    wt_txt=$(trunc_mid "$wt" "$wt_max")
+  if [ "$show_wt" -eq 1 ]; then
+    wt_txt=$(trunc_mid "$wt" "$w_max")
     b_disp="${b_disp}${MAGENTA}/${wt_txt}"
     b_plain="${b_plain}/${wt_txt}"
   fi
   gadd "${BLUE}${BOLD}${SIG_BRANCH}${b_disp}${RST}" "$b_plain"
 fi
-[ "$stash" -gt 0 ] && gadd "${MAGENTA}*${stash}${RST}" "*${stash}"
-[ "$conflict" -gt 0 ] && gadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
-[ "$untracked" -gt 0 ] && gadd "${CYAN}?${untracked}${RST}" "?${untracked}"
-[ "$unstaged" -gt 0 ] && gadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
-[ "$staged" -gt 0 ] && gadd "${GREEN}+${staged}${RST}" "+${staged}"
-[ "$ahead" -gt 0 ] && gadd "${GREEN}^${ahead}${RST}" "^${ahead}"
-[ "$behind" -gt 0 ] && gadd "${RED}v${behind}${RST}" "v${behind}"
+
+for ((ci = 0; ci < nct; ci++)); do gadd "${_ct_disp[ci]}" "${_ct_plain[ci]}"; done
 gflush
 
 # ── Group 2: this session ───────────────────────────────────────────────────
@@ -679,8 +792,18 @@ if [ -n "$name_txt" ]; then
 fi
 
 if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
-  gadd "${GREEN}${BOLD}+${lines_added}${RST}${MUTED}/${RED}${BOLD}-${lines_removed}${RST}" \
-    "+${lines_added}/-${lines_removed}"
+  # Churn can lead this group too (no name is the default), and a first member is
+  # never shed — so it has to fit the row on its own. Digits are the one member
+  # that must not be ellipsized: "+12..56" reads as a real number. Abbreviate
+  # instead, the same way token counts already are, which stays honest about
+  # magnitude: +123456/-654321 -> +123k/-654k.
+  ch_add=$lines_added ch_del=$lines_removed
+  if [ -n "$cols" ] && [ $((${#ch_add} + ${#ch_del} + 3)) -gt $((cols - 5)) ]; then
+    ch_add=$(abbrev_num "$lines_added")
+    ch_del=$(abbrev_num "$lines_removed")
+  fi
+  gadd "${GREEN}${BOLD}+${ch_add}${RST}${MUTED}/${RED}${BOLD}-${ch_del}${RST}" \
+    "+${ch_add}/-${ch_del}"
 fi
 
 # Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
@@ -690,13 +813,41 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
     if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
   }
 }')
+# The cost cell can be the group's FIRST member when no session/agent name is set
+# (the default), and gflush never sheds a first member — so it has to fit on its
+# own. Drop the derived per-hour burn before the total, which is the half you
+# cannot reconstruct from the other.
+# Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
+# it here dropped the burn rate at COLUMNS=60, where it fits fine.
+#
+# Measured against what the group ALREADY holds, not against the money cell alone.
+# Alone-only meant that in the ordinary name+churn+cost group the full string still
+# "fit the row" on its own, so nothing shortened — and gflush then shed the entire
+# cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
+# row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
+if [ -n "$cols" ] && [ -n "$money" ]; then
+  _mu=0
+  for ((_mi = 0; _mi < ${#_gm_plain[@]}; _mi++)); do
+    [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
+    _mu=$((_mu + ${#_gm_plain[_mi]}))
+  done
+  # 2 brackets + what's there + a separator ONLY if something is there + the cell.
+  # Counting the separator unconditionally stripped the burn rate from a cost-only
+  # group that fit exactly (19 cols into 19 at COLUMNS=27) — the very case this
+  # check was written for.
+  _msep=0
+  [ "${#_gm_plain[@]}" -gt 0 ] && _msep=1
+  if [ $((2 + _mu + _msep + ${#money})) -gt "$cols" ]; then
+    money=${money%% (*}
+  fi
+fi
 gadd "${GREEN}${money}${RST}" "$money"
 gflush
 
 # ── Group 3: this config ────────────────────────────────────────────────────
-# [<model> <ctxflag> <effort> <style> <vim>] — every knob that decides how this
+# [<model> <ctxflag> <effort> <vim> <style>] — every knob that decides how this
 # session behaves, in one cell: model (cyan), extended-context flag (yellow),
-# reasoning effort (green), output style (magenta), vim mode (mode-colored). The
+# reasoning effort (green), vim mode (mode-colored), output style (magenta). The
 # vim chip lived in its own bracket, but it is a config knob like the rest.
 # Short name: drop the " (...)" suffix. Capped to the branch budget because it is
 # this group's first member, and gflush can never shed the first member.
@@ -748,13 +899,31 @@ esac
 # context_window_size must not surface a bare [1M] on its own (it didn't before
 # these merged into one group). The vim chip is ungated — it rendered on its own
 # when vim mode was on and no model was reported, and still does.
+#
+# Order is shed order here too (gflush drops from the tail), so vim goes BEFORE
+# the output style: the mode is live state that changes as you type and decides
+# what your next keystroke does, while a style is set once and stays put. Ordered
+# the other way, a 1-char chip was dropped behind a long style name with columns
+# to spare.
+show_model=0
 if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
+  show_model=1
+fi
+if [ "$show_model" -eq 1 ]; then
   gadd "${CYAN}${model_short}${RST}" "$model_short"
   gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
-  gadd "${MAGENTA}${output_style}${RST}" "$output_style"
 fi
 gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
+# Capped ONLY when it actually leads the group — i.e. every cell ahead of it is
+# empty. Capping unconditionally ellipsized a long style name that fit with columns
+# to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
+# showed it whole); the first-member rule that justifies a cap simply did not apply.
+style_txt=$output_style
+if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ] && [ -z "$vm" ]; then
+  style_txt=$(trunc_mid "$output_style" "$branch_max")
+fi
+[ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
 gflush
 
 # Pack the groups onto lines: the title starts line 1; each group joins the
