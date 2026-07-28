@@ -1,0 +1,6 @@
+# Claude Code writes agent worktrees here — full checkouts, never committed.
+.claude/worktrees/
+
+# Per-clone settings override (the machine-local counterpart to the
+# checked-in .claude/settings.json).
+.claude/settings.local.json
