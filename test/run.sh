@@ -89,8 +89,9 @@ P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens"
 P_FRESH='{"workspace":{"current_dir":"/work/scratch/tmp"},"context_window":{"used_percentage":3,"total_input_tokens":8000,"context_window_size":200000},"model":{"display_name":"Haiku 4.5"}}'
 
 # Rich line-1: agent.name (wins over session_name), vim mode, and the xhigh effort
-# tier — exercises the fields folded onto line 1 by the compact layout. agent name
-# -> [name] chip; vim NORMAL -> [N]; effort xhigh -> "XHi" (not "Xhigh").
+# tier — exercises the fields folded onto line 1 by the compact layout, and locks
+# the concept grouping: agent name joins churn/cost in the session group, vim
+# NORMAL -> "N" joins the config group, effort xhigh -> "XHi" (not "Xhigh").
 P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"vim":{"mode":"NORMAL"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
 
 # ── Cases (non-git) ────────────────────────────────────────────────────────
@@ -178,10 +179,11 @@ P_LONGBRANCH='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"conte
 snapshot longbranch-trunc 100 "$P_LONGBRANCH"
 
 # ── Line 1 hard-bound + wrap (git, dirty, long branch) ───────────────────────
-# Dirty the repo so line 1 carries branch + counters + lines-changed groups;
-# with the long branch that's wider than a narrow pane, this exercises the wrap
-# to a continuation line. Line 1 must never exceed COLUMNS at any width, and the
-# 60-col snapshot locks the wrapped layout.
+# Dirty the repo so line 1 carries the git group (branch + counters) and the
+# session group (lines changed); with the long branch that's wider than a narrow
+# pane, this exercises the wrap to a continuation line. Line 1 must never exceed
+# COLUMNS at any width, and the 60-col snapshot locks the wrapped layout — plus
+# the invariant that branch and counters share ONE bracket.
 : > untracked.txt    # -> "1 untracked"
 echo change >> f.txt # -> "1 modified" (unstaged)
 P_DIRTY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_lines_added":120,"total_lines_removed":45}}'
@@ -192,6 +194,38 @@ for w in 60 80 100 120 160; do
 done
 assert "width: line 1 hard-bounds (git dirty, long branch)" "$l1_overflow"
 snapshot line1-wrap 60 "$P_DIRTY"
+
+# ── Line 1 must fit the USABLE row, and groups must shed ─────────────────────
+# Two gaps the assertion above cannot close:
+#
+#   1. It bounds line 1 by COLUMNS, but line 1's real budget is COLUMNS minus
+#      CHROME_MARGIN (8) — overrunning the margin re-triggers the very wrap that
+#      margin exists to prevent, while staying under COLUMNS.
+#   2. P_DIRTY is the NARROWEST form of the two groups that got wider when
+#      per-field brackets merged into per-concept ones: no session name, no cost,
+#      no worktree, and only "?1 !1".
+#
+# So this bounds the line-1 block by COLUMNS-8 against a worst case: a long
+# session name + 5-digit churn + a 6-figure cost sharing ONE bracket, and a long
+# branch + worktree + counters sharing another. A group is unsplittable (the
+# packer relocates whole segments, it never breaks one open), so gflush has to
+# shed members — the same path that sheds counters from an over-wide git group.
+# Scoped to the line-1 block (everything before the CTX line) so the
+# MIN_PIP_COUNT bar floor at narrow widths can't false-fail it.
+L1_MARGIN=8
+line1_block() { awk '/^CTX /{exit} {print}'; }
+P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
+l1_budget_overflow=0
+for pw in "$P_DIRTY" "$P_L1_MAX"; do
+  for w in 60 80 100 120 160 200; do
+    max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
+    [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
+  done
+done
+assert "width: line 1 fits COLUMNS-CHROME_MARGIN (worst-case groups)" "$l1_budget_overflow"
+
+# ...and the elision is visible rather than a silent drop: locks the '..' marker.
+snapshot line1-shed 60 "$P_L1_MAX"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
