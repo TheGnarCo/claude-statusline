@@ -4,6 +4,33 @@ What each **tag** ships. Tags are the only thing that reaches anyone: `/gnar-sta
 installs a pinned tag and `install.sh` symlinks a clone, so a merge to `main` changes
 nothing for users until a tag is cut and the agent-skills pin moves.
 
+## v1.1.1
+
+Two small line-1 corrections. No new dependencies; `subagent-statusline.sh` and
+`install.sh` are unchanged, and no line is added, removed, or reordered — so the
+`/gnar-statusline` Customize prose still describes this layout and only the pin has to move.
+
+### Links are underlined
+
+Every OSC8 hyperlink — the repo title, the branch, the telemetry chip — now renders
+underlined. The OSC 8 escape is zero-width, so until now a clickable cell looked exactly
+like every other cell on the row: the only way to learn what was a link was to ⌘-click and
+find out. The underline is the affordance every terminal renders, and it costs no columns.
+
+It closes with SGR 24 rather than a full reset, so the cell's own color survives, and the
+cmux shim drops the underline along with the escape — under cmux there is no link, and an
+underlined cell that does nothing when clicked is worse than a plain one.
+
+### The default output style is no longer a cell
+
+Claude Code reports the built-in style by name (`claude`, or `default` on older builds), so
+the config group carried a permanent magenta word on every session that had never run
+`/output-style`. It now renders only when a **non-default** style is active — which is
+exactly when "why is Claude answering like this?" is a question worth a column. A lone
+default style leaves no empty bracket behind.
+
+**Full diff:** [`v1.1.0...v1.1.1`](https://github.com/TheGnarCo/claude-statusline/compare/v1.1.0...v1.1.1)
+
 ## v1.1.0
 
 Line 1 is restructured: **one bracket per concept** instead of one per field, a new
