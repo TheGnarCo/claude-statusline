@@ -14,7 +14,7 @@
 #           they won't fit the pane. No PR chip — Claude Code surfaces the PR.
 #           Members are space-separated inside their []; git counters are colored
 #           ASCII sigils:
-#           *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#           x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
 #   Line 2: CTX <bar w/ amber autocompact cell> N% Nk/Nk cache N% N%->AC [200k+]
 #   Line 3: 5h  <bar> N% Xh Ym left [delta]   (+ inline "7d N%" when 7d hidden)
 #   Line 4: 7d  <bar> N% Xd Yh left [delta]   (shown only when 7d is binding)
@@ -636,7 +636,7 @@ gflush() {
 # Counters are colored ASCII sigils (untracked cyan, modified yellow, staged
 # green, conflict bold-red, stash magenta, ahead green, behind red) — the glyph +
 # count is ~4x denser than "N untracked, N modified, …". Sigils:
-#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#   x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
 
 # Worktree name (Claude's payload first, else the git worktree dir basename).
 wt=$worktree_name_input
@@ -650,18 +650,24 @@ wt=$worktree_name_input
 # counters, never the reverse — with separate brackets the packer used to wrap
 # the counters onto a continuation line, and shedding them instead would lose
 # state the split layout kept.
+# Order is MOST URGENT FIRST, and that is load-bearing rather than cosmetic:
+# gflush sheds from the tail, so display order *is* shed order. A mid-merge
+# conflict and unpushed/unpulled commits are the states you cannot afford to miss
+# (they change what you should do next); a stash count is the one you can. So the
+# tail — stash, untracked — is what a too-narrow pane gives up, and x/^/v are the
+# last to go. Leftmost is also nearest the branch it qualifies.
 _ct_disp=() _ct_plain=()
 ctadd() {
   _ct_disp[${#_ct_disp[@]}]=$1
   _ct_plain[${#_ct_plain[@]}]=$2
 }
-[ "$stash" -gt 0 ] && ctadd "${MAGENTA}*${stash}${RST}" "*${stash}"
 [ "$conflict" -gt 0 ] && ctadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
-[ "$untracked" -gt 0 ] && ctadd "${CYAN}?${untracked}${RST}" "?${untracked}"
-[ "$unstaged" -gt 0 ] && ctadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
-[ "$staged" -gt 0 ] && ctadd "${GREEN}+${staged}${RST}" "+${staged}"
 [ "$ahead" -gt 0 ] && ctadd "${GREEN}^${ahead}${RST}" "^${ahead}"
 [ "$behind" -gt 0 ] && ctadd "${RED}v${behind}${RST}" "v${behind}"
+[ "$unstaged" -gt 0 ] && ctadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
+[ "$staged" -gt 0 ] && ctadd "${GREEN}+${staged}${RST}" "+${staged}"
+[ "$untracked" -gt 0 ] && ctadd "${CYAN}?${untracked}${RST}" "?${untracked}"
+[ "$stash" -gt 0 ] && ctadd "${MAGENTA}*${stash}${RST}" "*${stash}"
 
 nct=${#_ct_plain[@]}
 ct_width=0
@@ -671,36 +677,55 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   b=$branch
   [ -z "$b" ] && b="-"
 
-  # Name budgets, squeezed to leave the counters room: `avail` is the row minus
-  # "[]", the "@", and the counters — i.e. what the names may occupy, including
-  # the "/" a worktree adds. Floor at 5 because trunc_mid declines to ellipsize
-  # below that (it would hand back the name untouched and overrun anyway).
+  # Name budgets. `avail` is the row minus "[]", the "@", and the counters — what
+  # the names may occupy, including the "/" a worktree adds.
   #
-  # When even both floors won't fit, the WORKTREE SUFFIX IS DROPPED rather than a
-  # counter: "/wt" restates which checkout this is — something the pane's own
-  # title and the branch already imply — whereas losing ^N/vN reads as "in sync
-  # with upstream" when you are not. Squeeze the branch, then drop the worktree,
-  # and only then let gflush's tail-shed touch a counter.
+  # Sized from what each name ACTUALLY NEEDS (its own length, capped by its share
+  # of the pane), never from the 5-col floor: budgeting by the floor threw away a
+  # 2-char worktree suffix that had room to spare, and handed the worktree a flat
+  # 40% it didn't need while over-truncating the branch. Order of yielding, most
+  # expendable last to arrive: shrink the branch -> shrink the worktree -> drop
+  # the worktree suffix -> and only then let gflush's tail-shed reach a counter.
+  # The suffix goes before any counter because it restates which checkout this is,
+  # which the pane title and branch already imply, while a missing counter
+  # misreports the tree. Floor at 5 because trunc_mid declines to ellipsize below
+  # that (it would hand the name back untouched and overrun anyway).
   b_max=$branch_max
   w_max=$wt_max
   show_wt=0
   [ -n "$wt" ] && show_wt=1
   if [ -n "$cols" ]; then
     avail=$((cols - 3 - ct_width))
+
+    want_b=${#b}
+    [ "$want_b" -gt "$b_max" ] && want_b=$b_max
+    want_w=0
     if [ "$show_wt" -eq 1 ]; then
-      if [ $((b_max + 1 + w_max)) -gt "$avail" ]; then
-        if [ "$avail" -ge 11 ]; then # 5 + "/" + 5
-          w_max=$((avail * 2 / 5))
-          [ "$w_max" -lt 5 ] && w_max=5
-          b_max=$((avail - 1 - w_max))
-          [ "$b_max" -lt 5 ] && b_max=5
+      want_w=${#wt}
+      [ "$want_w" -gt "$w_max" ] && want_w=$w_max
+    fi
+    need=$want_b
+    [ "$show_wt" -eq 1 ] && need=$((need + 1 + want_w))
+
+    if [ "$need" -le "$avail" ]; then
+      b_max=$want_b w_max=$want_w
+    elif [ "$show_wt" -eq 1 ]; then
+      # Branch yields first, keeping the worktree at the length it actually needs.
+      b_max=$((avail - 1 - want_w))
+      if [ "$b_max" -ge 5 ]; then
+        w_max=$want_w
+      else
+        # Floored branch + this worktree still won't fit: shrink the worktree,
+        # then drop the suffix outright if even that fails.
+        w_max=$((avail - 6)) # avail - "/" - the branch's 5-col floor
+        if [ "$w_max" -ge 5 ]; then
+          b_max=5
         else
           show_wt=0
           b_max=$avail
         fi
       fi
-    fi
-    if [ "$show_wt" -eq 0 ] && [ "$b_max" -gt "$avail" ]; then
+    else
       b_max=$avail
     fi
     [ "$b_max" -lt 5 ] && b_max=5

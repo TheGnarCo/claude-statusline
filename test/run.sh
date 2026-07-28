@@ -356,6 +356,30 @@ assert "git group: the forced-shed widths are actually exercised" "$((1 - ct_for
 # Locks the squeeze: at 40 the worktree suffix is gone but every counter remains.
 snapshot line1-counters 40 "$P_CT"
 
+# A SHORT worktree name must never be dropped while it still fits. The payload
+# above carries a 20-char name, so the budget maths was only ever exercised where
+# dropping was correct; sizing from the 5-col floor instead of the actual length
+# threw away a 2-char suffix with room to spare. Also asserts monotonicity: a
+# wider pane must never show LESS than a narrower one.
+P_CT_SHORTWT=${P_CT/\"name\":\"a-long-worktree-name\"/\"name\":\"wt\"}
+shortwt_dropped=0 nonmono=0 prev_has=0
+for w in 26 30 34 38 42 44 48 60 80; do
+  out=$(run_sl "$w" "$P_CT_SHORTWT" | strip_ansi | line1_block)
+  # Room for it? Then it must be there. Measure the rendered line-1 slack.
+  used=$(printf '%s\n' "$out" | widest_line)
+  has=0
+  case "$out" in *'/wt'*) has=1 ;; esac
+  if [ "$has" -eq 0 ] && [ $((used + 3)) -le $((w - L1_MARGIN)) ]; then
+    shortwt_dropped=1
+    printf 'note: /wt dropped at COLUMNS=%s with %s cols used of %s\n' \
+      "$w" "$used" "$((w - L1_MARGIN))"
+  fi
+  [ "$prev_has" -eq 1 ] && [ "$has" -eq 0 ] && nonmono=1
+  prev_has=$has
+done
+assert "git group: a short worktree name is kept whenever it fits" "$shortwt_dropped"
+assert "git group: worktree visibility is monotonic in width" "$nonmono"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

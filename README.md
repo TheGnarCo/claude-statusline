@@ -7,7 +7,7 @@ Targets macOS system bash (3.2) so it's a portable drop-in.
 ## What it shows
 
 ```
-claude-statusline [@main/wt ?1 !2 +3][reviewer +42/-7 $1.23 ($7.38/h)][Opus 4.8 1M High Explanatory N]
+claude-statusline [@main/wt ^2 !2 +3][reviewer +42/-7 $1.23 ($7.38/h)][Opus 4.8 1M High Explanatory N]
 CTX ####--------------------|-----  13% 128k/1M cache 78% 67%->AC
 5h  |###########------------------  40% 3h 12m left [+8%] 7d 22%
 ```
@@ -19,7 +19,7 @@ lines** — identity and config share one row of colored `[]` groups, and the 7-
 shows only when it's the binding one.
 
 - **Line 1** — the repo/dir title, then **one `[]` per concept** — a bracket is a group of related cells, not a single field, so the eye stops three times instead of seven. Groups pack left-to-right and wrap to a continuation line only when they won't fit the pane. Members are space-separated, each keeping its own color, and any member with nothing to say drops out (an all-empty group renders no bracket at all):
-  - **`[@branch/worktree counters]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `*`stash `x`conflict `?`untracked `!`modified `+`staged `^`ahead `v`behind — e.g. `[@main/wt ?1 !2 +3]`. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget. (The repo name is the line's title and links to GitHub.)
+  - **`[@branch/worktree counters]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `x`conflict `^`ahead `v`behind `!`modified `+`staged `?`untracked `*`stash — e.g. `[@main/wt ^2 !2 +3]`. Ordered most-urgent-first, which is also the order a too-narrow pane gives them up in (from the tail): a conflict or unpushed commits are what you cannot afford to miss, a stash count is what you can. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget. (The repo name is the line's title and links to GitHub.)
   - **`[name +added/-removed $cost ($/h)]`** — **this session**. The name orients you among many concurrent tabs: `agent.name` (a spawned/`--agent` context, magenta) wins over your `session_name` (cyan) when both are set. Then this session's churn, and its cost + per-hour burn.
   - **`[model 1M effort style vim]`** — **this config**. Model, context-window flag (`1M` for the extended window), reasoning effort (`XHi`/`Max` for the high tiers), output style, and vim mode (`N`/`I`/`V`/`V-L`, colored by mode, shown only when vim mode is on).
 
