@@ -167,8 +167,14 @@ assert "fable: landmark absent from the 5h bar" "$?"
 fable_absent "$(bar_of "$sb_out" CTX)"
 assert "fable: landmark absent from the CTX bar" "$?"
 # ...and it's actually colored (a stripped snapshot can't tell FABLE="" apart).
+# Both color paths need their own assertion: FABLE is defined once per branch, so
+# a truecolor-only check leaves the 256 entry free to be deleted with the suite
+# still green — the same one-of-two-paths gap as the priority rule below.
 case "$(run_sl 120 "$P_SEVEN_BINDING")" in *"${esc}[38;2;214;122;255m"*) c=0 ;; *) c=1 ;; esac
-assert "fable: landmark carries its own color" "$c"
+assert "fable: landmark colored on the truecolor path" "$c"
+fable_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color bash "$SCRIPT" <<< "$P_SEVEN_BINDING")
+case "$fable_256" in *"${esc}[38;5;177m"*) c=0 ;; *) c=1 ;; esac
+assert "fable: landmark colored on the 256 ramp" "$c"
 
 # Cell-collision priority: clock > projection > Fable landmark. The clock and the
 # landmark both index as pct*N/100, so a clock at 50% lands on exactly the
