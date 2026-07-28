@@ -601,10 +601,15 @@ gflush() {
   for ((i = 0; i < n; i++)); do
     sep=0
     [ -n "$plain" ] && sep=1
+    # break, not continue: members were added in priority order, so once one
+    # doesn't fit, everything after it goes too. Skipping ahead to whatever
+    # happens to be shorter would drop a higher-priority member while keeping a
+    # lower-priority one, and would put the trailing '..' after a member that was
+    # never elided — the marker has to mean "everything past here is missing".
     if [ "$budget" -ge 0 ] && [ -n "$plain" ] &&
       [ $((${#plain} + sep + ${#_gm_plain[i]})) -gt "$budget" ]; then
       elided=1
-      continue
+      break
     fi
     if [ "$sep" -eq 1 ]; then disp="${disp} " plain="${plain} "; fi
     disp="${disp}${_gm_disp[i]}" plain="${plain}${_gm_plain[i]}"
@@ -632,11 +637,60 @@ gflush() {
 wt=$worktree_name_input
 [ -z "$wt" ] && wt=$git_worktree_name
 
+# Collect the counters BEFORE the branch, so their width is known while the
+# branch/worktree budgets are still being chosen. Inside one bracket the two
+# compete for the row, and they are not equally sheddable: a counter is atomic
+# data (dropping x1 or *3 misreports the tree as conflict-free or stash-free)
+# while a branch name is designed to be ellipsized. So the NAMES yield to the
+# counters, never the reverse — with separate brackets the packer used to wrap
+# the counters onto a continuation line, and shedding them instead would lose
+# state the split layout kept.
+_ct_disp=() _ct_plain=()
+ctadd() {
+  _ct_disp[${#_ct_disp[@]}]=$1
+  _ct_plain[${#_ct_plain[@]}]=$2
+}
+[ "$stash" -gt 0 ] && ctadd "${MAGENTA}*${stash}${RST}" "*${stash}"
+[ "$conflict" -gt 0 ] && ctadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
+[ "$untracked" -gt 0 ] && ctadd "${CYAN}?${untracked}${RST}" "?${untracked}"
+[ "$unstaged" -gt 0 ] && ctadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
+[ "$staged" -gt 0 ] && ctadd "${GREEN}+${staged}${RST}" "+${staged}"
+[ "$ahead" -gt 0 ] && ctadd "${GREEN}^${ahead}${RST}" "^${ahead}"
+[ "$behind" -gt 0 ] && ctadd "${RED}v${behind}${RST}" "v${behind}"
+
+nct=${#_ct_plain[@]}
+ct_width=0
+for ((ci = 0; ci < nct; ci++)); do ct_width=$((ct_width + 1 + ${#_ct_plain[ci]})); done
+
 if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   b=$branch
   [ -z "$b" ] && b="-"
+
+  # Name budgets, squeezed to leave the counters room: row minus "[]", the "@",
+  # the counters, and the "/" a worktree adds. Floor at 5 because trunc_mid
+  # declines to ellipsize below that (it would return the name untouched and
+  # overrun anyway); at an absurdly narrow width the group can still exceed the
+  # row, exactly as the per-field layout did.
+  b_max=$branch_max
+  w_max=$wt_max
+  if [ -n "$cols" ]; then
+    avail=$((cols - 3 - ct_width))
+    [ -n "$wt" ] && avail=$((avail - 1))
+    if [ -n "$wt" ]; then
+      if [ $((b_max + w_max)) -gt "$avail" ]; then
+        w_max=$((avail * 2 / 5))
+        [ "$w_max" -lt 5 ] && w_max=5
+        b_max=$((avail - w_max))
+        [ "$b_max" -lt 5 ] && b_max=5
+      fi
+    elif [ "$b_max" -gt "$avail" ]; then
+      b_max=$avail
+      [ "$b_max" -lt 5 ] && b_max=5
+    fi
+  fi
+
   # Truncate the *displayed* text only; the hyperlink target keeps the full ref.
-  b_txt=$(trunc_mid "$b" "$branch_max")
+  b_txt=$(trunc_mid "$b" "$b_max")
   if [ -n "$repo_https" ] && [ -n "$branch" ]; then
     b_disp=$(osc8 "$repo_https/tree/$branch" "$b_txt")
   else
@@ -644,19 +698,14 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   fi
   b_plain="${SIG_BRANCH}${b_txt}"
   if [ -n "$wt" ]; then
-    wt_txt=$(trunc_mid "$wt" "$wt_max")
+    wt_txt=$(trunc_mid "$wt" "$w_max")
     b_disp="${b_disp}${MAGENTA}/${wt_txt}"
     b_plain="${b_plain}/${wt_txt}"
   fi
   gadd "${BLUE}${BOLD}${SIG_BRANCH}${b_disp}${RST}" "$b_plain"
 fi
-[ "$stash" -gt 0 ] && gadd "${MAGENTA}*${stash}${RST}" "*${stash}"
-[ "$conflict" -gt 0 ] && gadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
-[ "$untracked" -gt 0 ] && gadd "${CYAN}?${untracked}${RST}" "?${untracked}"
-[ "$unstaged" -gt 0 ] && gadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
-[ "$staged" -gt 0 ] && gadd "${GREEN}+${staged}${RST}" "+${staged}"
-[ "$ahead" -gt 0 ] && gadd "${GREEN}^${ahead}${RST}" "^${ahead}"
-[ "$behind" -gt 0 ] && gadd "${RED}v${behind}${RST}" "v${behind}"
+
+for ((ci = 0; ci < nct; ci++)); do gadd "${_ct_disp[ci]}" "${_ct_plain[ci]}"; done
 gflush
 
 # ── Group 2: this session ───────────────────────────────────────────────────

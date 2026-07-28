@@ -212,9 +212,21 @@ snapshot line1-wrap 60 "$P_DIRTY"
 # shed members — the same path that sheds counters from an over-wide git group.
 # Scoped to the line-1 block (everything before the CTX line) so the
 # MIN_PIP_COUNT bar floor at narrow widths can't false-fail it.
-L1_MARGIN=8
+# Derived from the script, not restated: hardcoding 8 here would silently check
+# the wrong budget if CHROME_MARGIN's default ever changed. run_sl pins
+# CLAUDE_STATUSLINE_CHROME_MARGIN='' so the script's own default is what applies.
+L1_MARGIN=$(awk -F= '/^CHROME_MARGIN=/ {print $2; exit}' "$SCRIPT")
+case "$L1_MARGIN" in '' | *[!0-9]*)
+  printf 'FAIL     could not read CHROME_MARGIN default\n'
+  FAIL=$((FAIL + 1))
+  L1_MARGIN=8
+  ;;
+esac
 line1_block() { awk '/^CTX /{exit} {print}'; }
-P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
+# worktree.name is set deliberately: without it the git group's first member is
+# just "@branch", and the widest form — "@branch/worktree", which gflush can never
+# shed because it is the first member — would go unmeasured.
+P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name-here"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
 l1_budget_overflow=0
 for pw in "$P_DIRTY" "$P_L1_MAX"; do
   for w in 60 80 100 120 160 200; do
