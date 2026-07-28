@@ -831,8 +831,13 @@ if [ -n "$cols" ] && [ -n "$money" ]; then
     [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
     _mu=$((_mu + ${#_gm_plain[_mi]}))
   done
-  # 2 brackets + what's there + the separating space + the cell itself.
-  if [ $((2 + _mu + 1 + ${#money})) -gt "$cols" ]; then
+  # 2 brackets + what's there + a separator ONLY if something is there + the cell.
+  # Counting the separator unconditionally stripped the burn rate from a cost-only
+  # group that fit exactly (19 cols into 19 at COLUMNS=27) — the very case this
+  # check was written for.
+  _msep=0
+  [ "${#_gm_plain[@]}" -gt 0 ] && _msep=1
+  if [ $((2 + _mu + _msep + ${#money})) -gt "$cols" ]; then
     money=${money%% (*}
   fi
 fi
@@ -910,9 +915,14 @@ if [ "$show_model" -eq 1 ]; then
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
 fi
 gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
-# Capped for the same reason: with no model reported, the style becomes this
-# group's first member.
-style_txt=$(trunc_mid "$output_style" "$branch_max")
+# Capped ONLY when it actually leads the group — i.e. every cell ahead of it is
+# empty. Capping unconditionally ellipsized a long style name that fit with columns
+# to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
+# showed it whole); the first-member rule that justifies a cap simply did not apply.
+style_txt=$output_style
+if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ] && [ -z "$vm" ]; then
+  style_txt=$(trunc_mid "$output_style" "$branch_max")
+fi
 [ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
 gflush
 

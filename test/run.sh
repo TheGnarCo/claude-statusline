@@ -555,6 +555,29 @@ for w in 24 26 30; do
 done
 assert "session group: an elision is marked, not silent" "$((1 - sess_marked))"
 
+# A cap is only justified for a member that LEADS its group (gflush can never shed
+# a first member). Capping unconditionally is a regression against main: these two
+# both fit with room to spare and must render whole.
+#
+# Floor, stated rather than asserted: below ~COLUMNS 24 line 1 cannot be bounded at
+# all. A single atomic member (6-digit abbreviated churn is 13 columns) exceeds the
+# whole budget, and no shedding helps because it leads its group. That is the same
+# regime where MIN_PIP_COUNT already renders the CTX bar at 38 columns regardless,
+# so the pane is overrun by design well before line 1 contributes; the sweeps above
+# therefore start at 24.
+P_STYLE_LONG='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"output_style":{"name":"Deep Research Mode"}}'
+out=$(run_sl 48 "$P_STYLE_LONG" | strip_ansi | line1_block)
+case "$out" in *'Deep Research Mode'*) c=0 ;; *) c=1 ;; esac
+assert "config group: a style that fits is not ellipsized" "$c"
+
+# Cost-only at a width where the full cell fits EXACTLY: the burn rate must survive.
+# An unconditional separator in the fit check made this strip the burn at 19-of-19.
+P_COST_EXACT='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
+out=$(run_sl 27 "$P_COST_EXACT" | strip_ansi | line1_block)
+# Match on the burn-rate suffix, not the figure — a literal '$7...' trips SC2016.
+case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
+assert "session group: an exactly-fitting cost keeps its burn rate" "$c"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
