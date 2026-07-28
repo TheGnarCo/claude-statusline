@@ -403,11 +403,14 @@ snapshot line1-counters 40 "$P_CT"
 # threw away a 2-char suffix with room to spare. Also asserts monotonicity: a
 # wider pane must never show LESS than a narrower one.
 P_CT_SHORTWT=${P_CT/\"name\":\"a-long-worktree-name\"/\"name\":\"wt\"}
-shortwt_dropped=0 nonmono=0 prev_has=0
+shortwt_dropped=0
 for w in 26 30 34 38 42 44 48 60 80; do
   out=$(run_sl "$w" "$P_CT_SHORTWT" | strip_ansi | line1_block)
-  # Room for it? Then it must be there. Measure the rendered line-1 slack.
-  used=$(printf '%s\n' "$out" | widest_line)
+  # Slack is measured on the GIT GROUP'S OWN line, not the widest line of the
+  # block: another group's continuation line is wider and would under-report the
+  # room actually available to this one.
+  gline=$(printf '%s\n' "$out" | grep '\[@' || true)
+  used=$(printf '%s\n' "$gline" | widest_line)
   has=0
   case "$out" in *'/wt'*) has=1 ;; esac
   if [ "$has" -eq 0 ] && [ $((used + 3)) -le $((w - L1_MARGIN)) ]; then
@@ -415,11 +418,41 @@ for w in 26 30 34 38 42 44 48 60 80; do
     printf 'note: /wt dropped at COLUMNS=%s with %s cols used of %s\n' \
       "$w" "$used" "$((w - L1_MARGIN))"
   fi
-  [ "$prev_has" -eq 1 ] && [ "$has" -eq 0 ] && nonmono=1
-  prev_has=$has
 done
 assert "git group: a short worktree name is kept whenever it fits" "$shortwt_dropped"
-assert "git group: worktree visibility is monotonic in width" "$nonmono"
+
+# Worktree visibility is NOT strictly monotonic, and asserting that it is would be
+# asserting something false. `need` is want_b + 1 + want_w, capped by branch_max
+# (cols/3) and wt_max (cols/5); at cols divisible by 15 BOTH caps step, so need
+# grows by 2 while avail grows by 1, and the suffix drops out for exactly one
+# column (shown at COLUMNS 52, gone at 53, back at 54 with a long branch + a
+# >=9-char worktree). Two progressions of period 3 and 5 collide every 15 columns,
+# so no choice of independent proportional caps avoids it; the alternatives trade
+# it for a 1-column dip in BRANCH length instead, which is the worse of the two
+# (the branch is the more informative cell, and its monotonicity is relied on
+# above).
+#
+# So assert the invariant that is true and still catches a real regression: the
+# suffix never vanishes for more than one consecutive column, and once the pane is
+# wide enough it stays. A permanent disappearance — the actual bug class — fails
+# here. Swept every column with a LONG worktree name, since a short one never lets
+# wt_max bind and so never reaches this path at all.
+# Runs of "not shown" at the narrow end are legitimate (it genuinely does not
+# fit), so only a gap appearing AFTER the suffix has started showing counts.
+P_CT_LONGWT=${P_CT/'"name":"a-long-worktree-name"'/'"name":"wt-abcd-ch"'}
+seen=0 gap=0 run=0
+# cols 36-58: consecutive columns, spanning the mod-15 point at cols 45.
+for w in $(seq 44 1 66); do
+  out=$(run_sl "$w" "$P_CT_LONGWT" | strip_ansi | line1_block)
+  if case "$out" in *'/wt'*) true ;; *) false ;; esac then
+    seen=1 run=0
+  elif [ "$seen" -eq 1 ]; then
+    run=$((run + 1))
+    [ "$run" -gt 1 ] && gap=1 && printf 'note: /wt missing for %s consecutive columns at COLUMNS=%s\n' "$run" "$w"
+  fi
+done
+assert "git group: worktree suffix never vanishes for >1 consecutive column" "$gap"
+assert "git group: the worktree suffix does appear at some swept width" "$((1 - seen))"
 
 # Widening the pane must never make any cell SHORTER — the previous check covered
 # worktree visibility but not branch length, and an all-or-nothing worktree drop
@@ -464,8 +497,11 @@ branch_shrank=0
 # Step 4 rather than 1: a decrease anywhere shows up between whichever two sampled
 # widths bracket it, so subsampling still catches the regression this guards
 # (branch 10 -> 5 as the suffix reappeared) without paying for 77 renders, each of
-# which forks git several times. Sweeping every column took the whole suite from
-# ~13s to ~86s; this keeps it near 30s.
+# which forks git several times. Sweeping every column here took the whole suite
+# from ~13s to ~86s. It now sits near 55s, most of it the all-counters fixture
+# setup and its renders rather than this sweep: the worktree-suffix check below does
+# need consecutive columns (a 1-column gap is legitimate, 2 is a bug), so it pays
+# for a bounded range rather than a step.
 for wtname in a-long-worktree-name wt; do
   prev_len=0
   for w in $(seq 24 4 84); do
@@ -506,6 +542,18 @@ for w in 40 44 48 52 56 60; do
 done
 assert "config group: vim mode outlives output style when shedding" "$vim_lost"
 assert "config group: a real config-group shed was exercised" "$((1 - vim_shed_seen))"
+
+# The session group must still be ABLE to mark an elision. The line1-shed golden
+# used to lock this, but now that the cost sheds its burn rate instead of the whole
+# cell, that snapshot legitimately shows no marker — so assert the marker directly
+# rather than lose the coverage.
+sess_marked=0
+for w in 24 26 30; do
+  sgroup=$(run_sl "$w" "$P_L1_CHURN_BIG" | strip_ansi | line1_block |
+    tr ']' '\n' | grep -E '^\[?\+' | tail -1)
+  case "$sgroup" in *' ..') sess_marked=1 ;; esac
+done
+assert "session group: an elision is marked, not silent" "$((1 - sess_marked))"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2

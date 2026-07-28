@@ -725,11 +725,21 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
 
     # The suffix is shown only when it costs the branch NOTHING — i.e. both names
     # fit at the lengths they want. That is not a stylistic choice, it is the only
-    # rule that keeps the branch monotonic in pane width: showing "/wt" costs
+    # rule that keeps the BRANCH monotonic in pane width: showing "/wt" costs
     # 1+len(wt) columns, so any width at which the suffix starts appearing would
     # otherwise SHORTEN the branch by that much versus one column narrower. (An
     # earlier version squeezed both and pinned the branch at its floor to keep the
     # suffix, which is exactly how widening a pane could shorten the branch.)
+    #
+    # The branch is monotonic; the SUFFIX is not, and it cannot be made so here.
+    # `need` is capped by branch_max (cols/3) and wt_max (cols/5), so where both
+    # step — cols divisible by 15 — need grows by 2 while avail grows by 1 and the
+    # suffix drops out for exactly one column (shown at COLUMNS 52, gone at 53,
+    # back at 54, with a long branch and a >=9-char worktree). Periods 3 and 5
+    # collide every 15 columns whatever the caps are; letting the branch absorb the
+    # difference instead just moves the 1-column artifact onto branch length, which
+    # is the more informative cell. Bounded and asserted in test/run.sh: the suffix
+    # never vanishes for more than one consecutive column.
     # Below that, the suffix is dropped and the whole budget goes to the branch —
     # one readable branch beats two mangled names, and it is the branch the
     # counters qualify.
@@ -809,8 +819,22 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
 # cannot reconstruct from the other.
 # Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
 # it here dropped the burn rate at COLUMNS=60, where it fits fine.
-if [ -n "$cols" ] && [ ${#money} -gt $((cols - 5)) ]; then
-  money=${money%% (*}
+#
+# Measured against what the group ALREADY holds, not against the money cell alone.
+# Alone-only meant that in the ordinary name+churn+cost group the full string still
+# "fit the row" on its own, so nothing shortened — and gflush then shed the entire
+# cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
+# row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
+if [ -n "$cols" ] && [ -n "$money" ]; then
+  _mu=0
+  for ((_mi = 0; _mi < ${#_gm_plain[@]}; _mi++)); do
+    [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
+    _mu=$((_mu + ${#_gm_plain[_mi]}))
+  done
+  # 2 brackets + what's there + the separating space + the cell itself.
+  if [ $((2 + _mu + 1 + ${#money})) -gt "$cols" ]; then
+    money=${money%% (*}
+  fi
 fi
 gadd "${GREEN}${money}${RST}" "$money"
 gflush

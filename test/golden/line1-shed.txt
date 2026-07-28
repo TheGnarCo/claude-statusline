@@ -1,6 +1,6 @@
 proj/claude-statusline
 [@feature/..es-here/a-lo..here !1 ?1]
-[refactor..eriment +98765/-43210 ..]
+[refactor..eriment +98765/-43210 $123456.78]
 [Opus 4.8 1M XHi N Explanatory]
 CTX ##-------------------|-----  10% 20k/1M 70%->AC
 5h  no rate-limit data yet
