@@ -13,7 +13,10 @@
 #
 # Determinism: HOME is pinned off-tree so dir_display never abbreviates to '~',
 # resets_at is a far-future sentinel so "time left" pins to the full window and
-# cancels out the real clock, and COLUMNS is fixed per case.
+# cancels out the real clock, COLUMNS is fixed per case, and
+# OTEL_RESOURCE_ATTRIBUTES is pinned empty so the telem-tag chip answers to the
+# fixture alone — not to whether the session running the suite is itself tagged
+# (this repo is, CI isn't, and that would otherwise flip the git goldens).
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -35,6 +38,7 @@ run_sl() {
   COLUMNS=$1 HOME=/home/tester COLORTERM=truecolor TERM=xterm-256color \
     NO_COLOR='' CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' \
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='' CLAUDE_STATUSLINE_CHROME_MARGIN='' \
+    OTEL_RESOURCE_ATTRIBUTES='' CLAUDE_STATUSLINE_HIDE_TELEM='' \
     bash "$SCRIPT" <<< "$2"
 }
 
@@ -96,7 +100,11 @@ P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"vim":{"mode
 
 # ── Cases (non-git) ────────────────────────────────────────────────────────
 NONGIT=$(mktemp -d)
-trap 'rm -rf "$NONGIT" "$GITREPO"' EXIT
+# Pre-declared so the trap body is safe under `set -u` from the moment it's armed:
+# these are assigned ~100 lines below, and an early `exit 2` before then would
+# otherwise abort the trap on an unbound variable and clean up nothing.
+GITREPO="" TELEMREPO=""
+trap 'rm -rf "$NONGIT" "$GITREPO" "$TELEMREPO"' EXIT
 cd "$NONGIT" || exit 2
 
 snapshot normal 120 "$P_NORMAL"
@@ -184,6 +192,13 @@ cd "$GITREPO" || exit 2
 # Payload supplies a stable title dir; git supplies the (long) branch.
 P_LONGBRANCH='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
 snapshot longbranch-trunc 100 "$P_LONGBRANCH"
+
+# ── Repo title: owner/name (git) ─────────────────────────────────────────────
+# Claude Code's structured workspace.repo payload is the preferred source for the
+# title, and it's what makes it owner/name rather than a bare name. Snapshotted
+# while the fixture repo is still clean, so the title is the only moving part.
+P_REPO='{"workspace":{"current_dir":"/work/proj/claude-statusline","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+snapshot repo-title 100 "$P_REPO"
 
 # ── Line 1 hard-bound + wrap (git, dirty, long branch) ───────────────────────
 # Dirty the repo so line 1 carries the git group (branch + counters) and the
@@ -284,7 +299,7 @@ snapshot line1-shed 60 "$P_L1_MAX"
 # dropped, before a counter is ever shed. A dropped ^N/vN reads as "in sync with
 # upstream" when you are not, which is worse than a truncated name.
 COUNTERS=$(mktemp -d) BARE=$(mktemp -d) CLONE=$(mktemp -d)
-trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE"' EXIT
+trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$TELEMREPO"' EXIT
 tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
 (
   set -e # without this the subshell's status is its LAST command's, so the
@@ -453,6 +468,169 @@ for w in $(seq 44 1 66); do
 done
 assert "git group: worktree suffix never vanishes for >1 consecutive column" "$gap"
 assert "git group: the worktree suffix does appear at some swept width" "$((1 - seen))"
+
+# ── Repo title: owner from the origin remote (git, fallback path) ─────────────
+# Back to the long-branch fixture: the all-counters repo above already has an
+# origin (its bare upstream), so `git remote add` there would fail and these would
+# assert against the wrong repo.
+cd "$GITREPO" || exit 2
+# With no workspace.repo in the payload the owner comes from parsing origin, so the
+# two sources must agree. And the parse must stay conservative: a remote whose path
+# has no owner segment must not promote the *host* into that slot.
+git remote add origin https://github.com/TheGnarCo/claude-statusline.git 2> /dev/null
+case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'TheGnarCo/claude-statusline'*) c=0 ;; *) c=1 ;; esac
+assert "title: owner parsed from the origin remote" "$c"
+
+git remote set-url origin https://example.com/toplevel 2> /dev/null
+out_noowner=$(run_sl 100 "$P_DIRTY" | strip_ansi)
+case "$out_noowner" in *'example.com/'*) c=1 ;; *'toplevel'*) c=0 ;; *) c=1 ;; esac
+assert "title: ownerless remote falls back to the bare repo name" "$c"
+
+# Paths deeper than <owner>/<repo> are common (GitLab subgroups, Bitbucket's
+# /scm/<project>/<repo>). The owner is the segment immediately before the repo —
+# taking the first one promoted a prefix into the owner slot ("scm/myrepo").
+git remote set-url origin https://bitbucket.example.com/scm/PROJ/myrepo.git 2> /dev/null
+case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'PROJ/myrepo'*) c=0 ;; *) c=1 ;; esac
+assert "title: deep remote path takes the segment before the repo" "$c"
+
+git remote set-url origin https://gitlab.example.com/group/subgroup/proj.git 2> /dev/null
+case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'subgroup/proj'*) c=0 ;; *) c=1 ;; esac
+assert "title: subgroup remote uses the immediate namespace" "$c"
+
+# A trailing slash must not make the repo its own owner ("claude-statusline/
+# claude-statusline"): basename tolerates it, the segment parse would not.
+git remote set-url origin https://github.com/TheGnarCo/claude-statusline/ 2> /dev/null
+case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'TheGnarCo/claude-statusline'*) c=0 ;; *) c=1 ;; esac
+assert "title: trailing-slash remote still resolves the real owner" "$c"
+
+# Only an http(s) URL has a host segment to strip. A local-path remote (a sibling
+# clone) must not have a parent directory promoted into the owner slot.
+git remote set-url origin /Users/me/src/upstream 2> /dev/null
+out_localpath=$(run_sl 100 "$P_DIRTY" | strip_ansi)
+case "$out_localpath" in *'src/upstream'*) c=1 ;; *'upstream'*) c=0 ;; *) c=1 ;; esac
+assert "title: local-path remote yields no owner" "$c"
+
+# Same for a non-GitHub SSH remote, which the github.com rewrite leaves as git@host:path.
+git remote set-url origin git@gitlab.example.com:group/proj.git 2> /dev/null
+out_ssh=$(run_sl 100 "$P_DIRTY" | strip_ansi)
+case "$out_ssh" in *'group/proj'* | *':'*) c=1 ;; *'proj'*) c=0 ;; *) c=1 ;; esac
+assert "title: non-GitHub SSH remote yields no owner" "$c"
+git remote remove origin 2> /dev/null
+
+# ── Telemetry-tag chip (git) ─────────────────────────────────────────────────
+# The chip reads [telem tag] when the repo carries a project.name OTEL attribute and
+# [no telem tag] when it doesn't (so its usage lands in the dashboard as
+# "(untagged)"). Detection mirrors the toolkit SessionStart hook, and every input it
+# reads is asserted here — live env, the repo's checked-in settings, its local
+# override, a settings file that exists but carries no tag (the one path that
+# actually forks jq), the opt-out, and the non-git case. Both states are asserted
+# positively: an inverted test would pass on a chip that never renders at all. Its
+# own throwaway repo, so writing settings files can't perturb the untracked counts
+# the snapshot cases above pin.
+TELEMREPO=$(mktemp -d)
+(cd "$TELEMREPO" && git init -q) > /dev/null 2>&1 || {
+  printf 'FAIL     telem fixture setup\n'
+  FAIL=$((FAIL + 1))
+}
+cd "$TELEMREPO" || exit 2
+P_TELEM='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+# chip_is <expected> — 0 when the rendered chip matches, 1 otherwise. "none" asserts
+# neither state rendered.
+chip_is() {
+  local out
+  out=$(run_sl 120 "$P_TELEM" | strip_ansi)
+  case "$1:$out" in
+    'tagged:'*'[telem tag]'*) return 0 ;;
+    'untagged:'*'[no telem tag]'*) return 0 ;;
+    'none:'*'telem tag'*) return 1 ;;
+    'none:'*) return 0 ;;
+  esac
+  return 1
+}
+
+chip_is untagged
+assert "telem: [no telem tag] in a git repo with no attribute" "$?"
+
+mkdir -p "$TELEMREPO/.claude"
+TAG='{"env":{"OTEL_RESOURCE_ATTRIBUTES":"project.name=org/repo"}}'
+printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
+chip_is tagged
+assert "telem: [telem tag] when .claude/settings.json carries project.name" "$?"
+
+printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.json"
+chip_is untagged
+assert "telem: settings.json without project.name still counts as untagged" "$?"
+
+printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
+chip_is tagged
+assert "telem: [telem tag] when settings.local.json carries project.name" "$?"
+
+# Claude Code merges settings.local.json OVER settings.json, so a local override
+# that replaces the attribute without a project.name really is untagged — the chip
+# must not keep reporting the repo file's tag.
+printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
+printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":"service.name=x"}}' > "$TELEMREPO/.claude/settings.local.json"
+chip_is untagged
+assert "telem: settings.local.json overrides the repo attribute" "$?"
+
+# ...but a local file that doesn't define the attribute must not clobber it either.
+printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.local.json"
+chip_is tagged
+assert "telem: an unrelated local override leaves the repo tag standing" "$?"
+
+# An EXPLICITLY emptied override is defined-but-empty, which clears the repo's tag.
+# `// ""` can't tell that from absent, and the chip stayed falsely green.
+printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":""}}' > "$TELEMREPO/.claude/settings.local.json"
+chip_is untagged
+assert "telem: an explicitly-emptied local override clears the tag" "$?"
+
+# A malformed settings.json must not mask a valid tag in the local override — one
+# jq run over both files aborts on the parse error and reports untagged, which is
+# why the detection reads them one at a time (as the hook does).
+printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
+printf '%s\n' '{ not json' > "$TELEMREPO/.claude/settings.json"
+chip_is tagged
+assert "telem: malformed settings.json doesn't mask settings.local.json" "$?"
+
+# ...and a malformed file on its own is untagged, not a crash.
+rm -f "$TELEMREPO/.claude/settings.local.json"
+chip_is untagged
+assert "telem: malformed settings.json alone reads as untagged" "$?"
+rm -f "$TELEMREPO/.claude/settings.json"
+
+# Both states link to the dashboard, so the OSC8 target must survive on each.
+for _st in '' 'project.name=org/repo'; do
+  out_link=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
+    CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' OTEL_RESOURCE_ATTRIBUTES="$_st" \
+    bash "$SCRIPT" <<< "$P_TELEM")
+  case "$out_link" in *'telem.thegnar.info'*) c=0 ;; *) c=1 ;; esac
+  [ "$c" -ne 0 ] && break
+done
+assert "telem: chip links to the dashboard in both states" "$c"
+
+# Live env, no settings file at all — how a tagged repo actually renders under
+# Claude Code, which exports the attribute from settings into the statusline's env.
+out_tagged=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
+  OTEL_RESOURCE_ATTRIBUTES='project.name=org/repo' bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
+case "$out_tagged" in *'[telem tag]'*) c=0 ;; *) c=1 ;; esac
+assert "telem: [telem tag] when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
+
+out_optout=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
+  CLAUDE_STATUSLINE_HIDE_TELEM=1 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
+case "$out_optout" in *'telem tag'*) c=1 ;; *) c=0 ;; esac
+assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=1 suppresses the chip" "$c"
+
+# ...and =0 means SHOW. A bare -n test read any value as "hide", so the one spelling
+# that unambiguously means "don't hide" hid it.
+out_hide0=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
+  CLAUDE_STATUSLINE_HIDE_TELEM=0 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
+case "$out_hide0" in *'no telem tag'*) c=0 ;; *) c=1 ;; esac
+assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=0 still shows the chip" "$c"
+
+# Outside a git repo there's no project to tag (the hook's first exit, mirrored).
+cd "$NONGIT" || exit 2
+chip_is none
+assert "telem: no chip at all outside a git repo" "$?"
 
 # Widening the pane must never make any cell SHORTER — the previous check covered
 # worktree visibility but not branch length, and an all-or-nothing worktree drop

@@ -80,12 +80,40 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   assertions in `run.sh`, not the goldens.
 - **Determinism in tests** depends on pinned env: `HOME` off-tree (so `~` abbreviation is
   stable), a far-future `resets_at` sentinel (so "time left" pins to the full window and
-  cancels the real clock), and a fixed `COLUMNS` per case. Don't introduce wall-clock or
-  `$HOME`-relative output without pinning it in `run.sh`.
+  cancels the real clock), a fixed `COLUMNS` per case, and an empty
+  `OTEL_RESOURCE_ATTRIBUTES` (so the telem-tag chip answers to the fixture, not to
+  whether the session running the suite is itself tagged — this repo is, CI isn't, and
+  that would flip all three git goldens). Don't introduce wall-clock, `$HOME`-relative, or
+  ambient-env output without pinning it in `run.sh`.
 - **Autocompact marker defaults to 80%.** The amber threshold cell / `N%->AC` headroom /
   `[AC]` chip assume autocompact fires at 80% of the context window. Override the marker
   with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) if a session's real threshold differs, or
   it will point at the wrong cell.
+- **The telem-tag chip duplicates the toolkit hook's detection on purpose.** It answers
+  the same question as `toolkit/scripts/hooks/project-telem-tag-check.sh` in agent-skills
+  (does this repo carry a `project.name=` OTEL attribute — live env, then
+  `.claude/settings.json`, then `.claude/settings.local.json`?), and the two must agree, or
+  the statusline nags about a repo the hook considers tagged. There's no shared code to
+  reach for — this repo ships two standalone scripts and can't depend on the plugin — so if
+  that hook's rule changes, port the change into `statusline.sh` by hand. One deliberate
+  refinement: where the hook takes the *first* file carrying the attribute, the chip lets a
+  later file that defines it win, matching Claude Code's own `settings.local.json`-over-
+  `settings.json` env merge. That can't produce a disagreement in practice — whenever any
+  settings file defines the attribute, Claude Code exports the merged value and the env
+  branch answers before either file is read.
+- **The chip is the one cell that touches the filesystem.** Everything else renders from
+  stdin. It stays cheap because a tagged repo answers from `$OTEL_RESOURCE_ATTRIBUTES`
+  (Claude Code exports it) and an untagged one usually has no settings file to read, so the
+  `jq` fork only happens for a repo with settings but no tag. Keep it that way — this runs
+  on every refresh.
+- **The title's owner comes from two sources that must agree.** Claude Code's structured
+  `workspace.repo` payload when present, else parsing the `origin` URL. That parse takes the
+  path segment immediately *before* the repo, not the first one — paths deeper than
+  `<owner>/<repo>` are normal (GitLab subgroups, Bitbucket's `/scm/<project>/<repo>`) and
+  taking the first segment rendered `scm/myrepo`. With nothing before the repo (a top-level
+  or non-GitHub-SSH remote) there's no owner and the title degrades to the bare name rather
+  than labelling something else as one. Both sources and the deep-path shapes are covered in
+  `run.sh` — change one and check the other.
 - **Bash 3.2 only.** No associative arrays, no `${var^^}`, no `mapfile`. The scripts use
   parallel indexed arrays and `tr` for case-folding on purpose — keep new code 3.2-safe so
   it runs on macOS system bash.
