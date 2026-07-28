@@ -550,21 +550,71 @@ add_seg() {
   seg_len[${#seg_len[@]}]=$2
 }
 
-# Group builder: members accumulate into one open group, space-separated, then
-# gflush emits it as a single bracketed segment. Each member carries its own
+# Group builder: members accumulate into one open group, then gflush emits them
+# space-separated inside a single bracketed segment. Each member carries its own
 # color, so a group stays multi-colored inside one []; the plain twin tracks the
 # visible width (the display string is full of ANSI/OSC8 noise). A group whose
 # every member was empty flushes to nothing — no empty [] on the row.
-_g="" _gp=""
-# gadd <colored> <plain> — append a member; a member with no plain text is a no-op.
+#
+# Members are held as parallel (display, plain) arrays rather than concatenated
+# eagerly, because gflush has to be able to DROP members — see its comment.
+_gm_disp=() _gm_plain=()
+# gadd <colored> <plain> — append a member; a member with no plain text is a
+# no-op. Add members in priority order: gflush sheds from the tail.
 gadd() {
   [ -z "$2" ] && return
-  if [ -n "$_gp" ]; then _g="${_g} " _gp="${_gp} "; fi
-  _g="${_g}${1}" _gp="${_gp}${2}"
+  _gm_disp[${#_gm_disp[@]}]=$1
+  _gm_plain[${#_gm_plain[@]}]=$2
 }
+
+# gflush — emit the open group as one bracketed segment.
+#
+# A group is UNSPLITTABLE: the packer below relocates a whole segment to a
+# continuation line but never breaks one open, so a group wider than the row
+# overruns the pane and forces the wrap CHROME_MARGIN exists to prevent. With one
+# bracket per field that was unreachable — every field carried its own budget —
+# but grouping sums them (a long session name + big churn + a big cost now share
+# a bracket), so the ceiling has to be enforced here: an over-wide group sheds
+# its lowest-priority members and marks the elision with '..'. The first member
+# is always kept, and each group's first member is separately budget-capped
+# (branch_max / wt_max for git, branch_max for the session name and the model),
+# so what survives always fits.
 gflush() {
-  [ -n "$_gp" ] && add_seg "${MUTED}[${RST}${_g}${MUTED}]${RST}" $((2 + ${#_gp}))
-  _g="" _gp=""
+  local n=${#_gm_plain[@]}
+  [ "$n" -eq 0 ] && return
+  local i budget=-1 full=0
+
+  # Measure the group whole; only an over-wide one is re-packed against a budget
+  # (which also holds room for " .."), so the common case is untouched.
+  if [ -n "$cols" ]; then
+    for ((i = 0; i < n; i++)); do
+      [ "$i" -gt 0 ] && full=$((full + 1))
+      full=$((full + ${#_gm_plain[i]}))
+    done
+    if [ $((full + 2)) -gt "$cols" ]; then
+      budget=$((cols - 5))
+      [ "$budget" -lt 1 ] && budget=1
+    fi
+  fi
+
+  local disp="" plain="" sep elided=0
+  for ((i = 0; i < n; i++)); do
+    sep=0
+    [ -n "$plain" ] && sep=1
+    if [ "$budget" -ge 0 ] && [ -n "$plain" ] &&
+      [ $((${#plain} + sep + ${#_gm_plain[i]})) -gt "$budget" ]; then
+      elided=1
+      continue
+    fi
+    if [ "$sep" -eq 1 ]; then disp="${disp} " plain="${plain} "; fi
+    disp="${disp}${_gm_disp[i]}" plain="${plain}${_gm_plain[i]}"
+  done
+  if [ "$elided" -eq 1 ]; then
+    disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
+  fi
+
+  add_seg "${MUTED}[${RST}${disp}${MUTED}]${RST}" $((2 + ${#plain}))
+  _gm_disp=() _gm_plain=()
 }
 
 # ── Group 1: git ────────────────────────────────────────────────────────────
@@ -648,7 +698,10 @@ gflush
 # session behaves, in one cell: model (cyan), extended-context flag (yellow),
 # reasoning effort (green), output style (magenta), vim mode (mode-colored). The
 # vim chip lived in its own bracket, but it is a config knob like the rest.
-model_short="${model_name%% (*}" # short name: drop the " (...)" suffix
+# Short name: drop the " (...)" suffix. Capped to the branch budget because it is
+# this group's first member, and gflush can never shed the first member.
+model_short="${model_name%% (*}"
+model_short=$(trunc_mid "$model_short" "$branch_max")
 
 # Context flag: prefer the authoritative context_window_size — anything past the
 # 200k default becomes a flag (abbrev_num(1000000) -> "1M"). Fall back to the
@@ -691,10 +744,16 @@ case "$vim_mode" in
   *) vm=${vim_mode:0:1} vm_col=$MUTED ;;
 esac
 
-gadd "${CYAN}${model_short}${RST}" "$model_short"
-gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
-gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
-gadd "${MAGENTA}${output_style}${RST}" "$output_style"
+# The model cells stay gated on the model fields: a payload that reports only a
+# context_window_size must not surface a bare [1M] on its own (it didn't before
+# these merged into one group). The vim chip is ungated — it rendered on its own
+# when vim mode was on and no model was reported, and still does.
+if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
+  gadd "${CYAN}${model_short}${RST}" "$model_short"
+  gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
+  gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
+  gadd "${MAGENTA}${output_style}${RST}" "$output_style"
+fi
 gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
 gflush
 

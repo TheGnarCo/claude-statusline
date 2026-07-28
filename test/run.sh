@@ -195,6 +195,38 @@ done
 assert "width: line 1 hard-bounds (git dirty, long branch)" "$l1_overflow"
 snapshot line1-wrap 60 "$P_DIRTY"
 
+# ── Line 1 must fit the USABLE row, and groups must shed ─────────────────────
+# Two gaps the assertion above cannot close:
+#
+#   1. It bounds line 1 by COLUMNS, but line 1's real budget is COLUMNS minus
+#      CHROME_MARGIN (8) — overrunning the margin re-triggers the very wrap that
+#      margin exists to prevent, while staying under COLUMNS.
+#   2. P_DIRTY is the NARROWEST form of the two groups that got wider when
+#      per-field brackets merged into per-concept ones: no session name, no cost,
+#      no worktree, and only "?1 !1".
+#
+# So this bounds the line-1 block by COLUMNS-8 against a worst case: a long
+# session name + 5-digit churn + a 6-figure cost sharing ONE bracket, and a long
+# branch + worktree + counters sharing another. A group is unsplittable (the
+# packer relocates whole segments, it never breaks one open), so gflush has to
+# shed members — the same path that sheds counters from an over-wide git group.
+# Scoped to the line-1 block (everything before the CTX line) so the
+# MIN_PIP_COUNT bar floor at narrow widths can't false-fail it.
+L1_MARGIN=8
+line1_block() { awk '/^CTX /{exit} {print}'; }
+P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
+l1_budget_overflow=0
+for pw in "$P_DIRTY" "$P_L1_MAX"; do
+  for w in 60 80 100 120 160 200; do
+    max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
+    [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
+  done
+done
+assert "width: line 1 fits COLUMNS-CHROME_MARGIN (worst-case groups)" "$l1_budget_overflow"
+
+# ...and the elision is visible rather than a silent drop: locks the '..' marker.
+snapshot line1-shed 60 "$P_L1_MAX"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
