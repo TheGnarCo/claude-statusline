@@ -35,6 +35,7 @@ PIP_EMPTY='-'    # bar track           (muted)
 PIP_MARKER='|'   # clock / threshold   (marker color)
 PIP_PROJ='*'     # burn projection     (yellow)
 PIP_OVERFLOW='!' # projection overflow (bold red)
+PIP_FABLE='f'    # Fable weekly cap    (magenta)
 SIG_BRANCH='@'   # branch    (evokes git @/HEAD)
 
 # ── Color capability ────────────────────────────────────────────────────────
@@ -50,7 +51,7 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 # ── Style primitives ──────────────────────────────────────────────────────
 if [ "$USE_COLOR" -eq 0 ]; then
   UNDIM="" BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
-  NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT=""
+  NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT="" FABLE=""
 else
   UNDIM="${ESC}[22m"
   BOLD="${ESC}[1m"
@@ -67,12 +68,14 @@ else
     MARKER="${ESC}[38;2;96;200;255m"     # rate-window clock pip (blue)
     PROJ="${ESC}[38;2;255;210;80m"       # burn projection pip (yellow)
     AUTOCOMPACT="${ESC}[38;2;255;128;0m" # autocompact threshold cell (amber)
+    FABLE="${ESC}[38;2;214;122;255m"     # Fable weekly-cap landmark (magenta)
   else
     # 256-color approximations for terminals without truecolor.
     NEAR_WHITE="${ESC}[38;5;255m"
     MARKER="${ESC}[38;5;39m"
     PROJ="${ESC}[38;5;221m"
     AUTOCOMPACT="${ESC}[38;5;208m"
+    FABLE="${ESC}[38;5;177m"
   fi
 fi
 
@@ -108,6 +111,28 @@ MIN_PIP_COUNT=12 # keep the bar readable on a narrow pane (and >1 for the gradie
 # proportional: the chrome is a constant column cost regardless of terminal width.
 # Override with CLAUDE_STATUSLINE_CHROME_MARGIN when a build's chrome differs.
 CHROME_MARGIN=8
+
+# Fable 5 is included up to 50% of the *weekly* usage limit on Max plans and on
+# premium seats (Team plans and seat-based Enterprise plans alike); past that,
+# Fable usage draws pay-as-you-go usage credits. Mark that boundary on the 7d bar
+# so it isn't a surprise.
+#
+# Those cohorts only — where Fable is pay-as-you-go from the start there's no
+# included-Fable boundary to mark. The payload carries no plan signal, so the
+# cell renders either way; don't narrow this list without checking the policy,
+# since telling a capped user the cell doesn't apply to them is the worse error.
+#
+# LANDMARK, NOT A CUTOVER. The 7d bar tracks all-model usage, while the cap
+# applies only to Fable-attributed usage — so the cell means "if this week's
+# usage were all Fable, credits start here", not "credits start at this fill".
+# A user at 70% on Sonnet has crossed the cell and owes nothing.
+#
+# 50 is a constant because the statusline JSON has no per-model window: nothing
+# in the payload says how much of the 7d figure is Fable. (Claude Code's binary
+# schema sketches a server-emitted rate_limits.model_scoped array that would let
+# this become an exact readout — out of scope until the server emits it.)
+# 7d only: the cap is weekly, so the 5h bar never carries this cell.
+FABLE_CAP_PCT=50
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -225,9 +250,11 @@ build_palette() {
 }
 build_palette
 
-# render_bar <pct> <marker_pct|""> <proj_pct|""> <pip_count> <marker_color>
+# render_bar <pct> <marker_pct|""> <proj_pct|""> <pip_count> <marker_color> [static_pct|""]
+# static_pct is an optional fixed landmark cell (the 7d Fable cap); it yields the
+# cell to both dynamic indicators, so cell priority is clock > projection > static.
 render_bar() {
-  local pct=$1 marker_pct=$2 proj_pct=$3 pip_count=$4 marker_color=$5
+  local pct=$1 marker_pct=$2 proj_pct=$3 pip_count=$4 marker_color=$5 static_pct=${6:-}
   [ "$pct" -lt 0 ] && pct=0
   local filled=$((pct * pip_count / 100))
   [ "$filled" -gt "$pip_count" ] && filled=$pip_count
@@ -256,6 +283,11 @@ render_bar() {
       [ "$proj_idx" -gt $((pip_count - 1)) ] && proj_idx=$((pip_count - 1))
     fi
   fi
+  local static_idx=-1
+  if [ -n "$static_pct" ] && [ "$static_pct" -ge 0 ] && [ "$static_pct" -le 100 ]; then
+    static_idx=$((static_pct * pip_count / 100))
+    [ "$static_idx" -gt $((pip_count - 1)) ] && static_idx=$((pip_count - 1))
+  fi
 
   local out="" i pip gi
   for ((i = 0; i < pip_count; i++)); do
@@ -272,6 +304,8 @@ render_bar() {
       else
         out="${out}${UNDIM}${PROJ}${PIP_PROJ}"
       fi
+    elif [ "$i" -eq "$static_idx" ]; then
+      out="${out}${UNDIM}${FABLE}${PIP_FABLE}"
     elif [ "$i" -lt "$filled" ]; then
       gi=$((i * (GRAD_N - 1) / (pip_count - 1)))
       out="${out}${UNDIM}${_grad_palette[gi]}${pip}"
@@ -774,9 +808,9 @@ fi
 # window's display pieces are computed up front — including its trailing-text
 # overhead — so the shared bar reserve can account for every bar line before any
 # is rendered.
-_win_lbl=() _win_pct=() _win_clock=() _win_proj=() _win_time=() _win_delta=() _win_extra=() _win_over=()
+_win_lbl=() _win_pct=() _win_clock=() _win_proj=() _win_time=() _win_delta=() _win_extra=() _win_over=() _win_static=()
 compute_window() {
-  local pct_str=$1 resets_str=$2 window_min=$3 label=$4 extra_disp=$5 extra_plain=$6
+  local pct_str=$1 resets_str=$2 window_min=$3 label=$4 extra_disp=$5 extra_plain=$6 static_pct=${7:-}
   local pct
   pct=$(int_prefix "$pct_str")
   local resets=$resets_str
@@ -817,6 +851,7 @@ compute_window() {
   _win_time[n]=$time_label
   _win_delta[n]=$delta_disp
   _win_extra[n]=$extra_disp
+  _win_static[n]=$static_pct
   _win_over[n]=$((WIN_FIXED + ${#time_label} + ${#delta_plain} + ${#extra_plain}))
 }
 
@@ -825,7 +860,7 @@ if [ -n "$five_pct" ] && [ -n "$five_resets_at" ]; then
   five_has_data=1
   compute_window "$five_pct" "$five_resets_at" 300 "5h" "$five_extra" "$five_extra_plain"
 fi
-[ "$show_7d" -eq 1 ] && compute_window "$seven_pct" "$seven_resets_at" 10080 "7d" "" ""
+[ "$show_7d" -eq 1 ] && compute_window "$seven_pct" "$seven_resets_at" 10080 "7d" "" "" "$FABLE_CAP_PCT"
 
 # Shared bar width: hold back the widest overhead across the CTX + window lines
 # so no line's trailing text can run off the right edge, plus one safety col.
@@ -848,7 +883,7 @@ if [ "$five_has_data" -eq 0 ]; then
 fi
 render_window() {
   local i=$1 bar lbl pctf
-  bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$MARKER")
+  bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$MARKER" "${_win_static[i]}")
   printf -v lbl '%-3s' "${_win_lbl[i]}"
   printf -v pctf '%3s' "${_win_pct[i]}"
   printf '%s%s%s %s %s%s%%%s %s%s left%s [%s%s]%s%s\n' \

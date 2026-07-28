@@ -38,6 +38,17 @@ run_sl() {
     bash "$SCRIPT" <<< "$2"
 }
 
+# run_sl_256 <cols> <payload> — run_sl with COLORTERM cleared, to exercise the
+# indexed-ramp path. Same pinned env, which is the point: an ambient NO_COLOR in
+# the developer's shell must not make a *color* assertion fail for the wrong
+# reason (NO_COLOR is one this repo's own users plausibly export).
+run_sl_256() {
+  COLUMNS=$1 HOME=/home/tester COLORTERM='' TERM=xterm-256color \
+    NO_COLOR='' CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' \
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='' CLAUDE_STATUSLINE_CHROME_MARGIN='' \
+    bash "$SCRIPT" <<< "$2"
+}
+
 # snapshot <name> <cols> <payload> — compare ANSI-stripped output to golden.
 snapshot() {
   local name=$1 cols=$2 payload=$3
@@ -82,6 +93,11 @@ P_NORMAL='{'"$DIR"',"context_window":{"used_percentage":42,"total_input_tokens":
 
 P_SEVEN_BINDING='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":60,"resets_at":'"$FAR_FUTURE"'}}}'
 
+# 7d binding but BELOW the Fable weekly cap (40% used, still busier than 5h): the
+# 'f' landmark sits ahead of the fill, in the track. Pairs with seven-binding
+# (60%, past the cap) where it sits inside the filled run.
+P_SEVEN_BELOW_CAP='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":20,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":40,"resets_at":'"$FAR_FUTURE"'}}}'
+
 P_AUTOCOMPACT='{'"$DIR"',"context_window":{"used_percentage":82,"total_input_tokens":170000,"context_window_size":200000,"current_usage":{"cache_read_input_tokens":120000}},"exceeds_200k_tokens":true,"model":{"display_name":"Sonnet 5"},"effort":{"level":"medium"},"cost":{"total_cost_usd":0.44,"total_duration_ms":120000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":12,"resets_at":'"$FAR_FUTURE"'}}}'
 
 P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens":140000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":5,"resets_at":'"$FAR_FUTURE"'}}}'
@@ -100,6 +116,7 @@ cd "$NONGIT" || exit 2
 
 snapshot normal 120 "$P_NORMAL"
 snapshot seven-binding 120 "$P_SEVEN_BINDING"
+snapshot seven-below-cap 120 "$P_SEVEN_BELOW_CAP"
 snapshot autocompact 120 "$P_AUTOCOMPACT"
 snapshot near-ac 120 "$P_NEAR_AC"
 snapshot fresh-no-rate 120 "$P_FRESH"
@@ -121,7 +138,7 @@ case "$out_nocolor" in *"420k/1M"*) c=0 ;; *) c=1 ;; esac
 assert "NO_COLOR: content intact" "$c"
 
 # Non-truecolor terminals get the 256-color ramp (38;5;) not truecolor (38;2;).
-out_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color bash "$SCRIPT" <<< "$P_NORMAL")
+out_256=$(run_sl_256 120 "$P_NORMAL")
 case "$out_256" in *"${esc}[38;5;"*) c=0 ;; *) c=1 ;; esac
 assert "256-color: uses indexed ramp" "$c"
 case "$out_256" in *"${esc}[38;2;"*) c=1 ;; *) c=0 ;; esac
@@ -132,6 +149,70 @@ run_sl 120 "$P_NORMAL" > /dev/null
 assert "exit 0 when 7d hidden" "$?"
 run_sl 120 "$P_SEVEN_BINDING" > /dev/null
 assert "exit 0 when 7d shown" "$?"
+
+# ── Fable weekly-cap landmark: 7d bar only ──────────────────────────────────
+# The cap is weekly, so the 'f' cell belongs to the 7d bar and must never leak
+# onto the 5h or CTX one. Asserted directly (not just via the goldens) because
+# the regression this guards is a leak into a bar that shouldn't carry it.
+#
+# Scope the match to the BAR field, not the line: the trailing text contains an
+# 'f' of its own ("N left"), so a whole-line grep reports a false leak. The bar
+# is whitespace-delimited field 2 on every bar line, and contains no spaces.
+bar_of() { printf '%s\n' "$1" | awk -v l="$2" '$1 == l { print $2 }'; }
+
+# An ABSENCE check must not pass vacuously: `case "" in *f*)` falls through to
+# "no f", so a bar_of that extracts nothing (label rename, an extra leading
+# field) would silently disable these checks and read as "no leak". Require a
+# bar-shaped field first — every bar has track or fill pips — so a broken
+# extraction fails loudly instead of going quietly green.
+fable_absent() {
+  case "$1" in *[-#]*) ;; *) return 1 ;; esac # nothing bar-shaped extracted
+  case "$1" in *f*) return 1 ;; esac
+  return 0
+}
+sb_out=$(run_sl 120 "$P_SEVEN_BINDING" | strip_ansi)
+case "$(bar_of "$sb_out" 7d)" in *f*) c=0 ;; *) c=1 ;; esac
+assert "fable: landmark present on the 7d bar" "$c"
+fable_absent "$(bar_of "$sb_out" 5h)"
+assert "fable: landmark absent from the 5h bar" "$?"
+fable_absent "$(bar_of "$sb_out" CTX)"
+assert "fable: landmark absent from the CTX bar" "$?"
+# ...and it's actually colored (a stripped snapshot can't tell FABLE="" apart).
+# Both color paths need their own assertion: FABLE is defined once per branch, so
+# a truecolor-only check leaves the 256 entry free to be deleted with the suite
+# still green — the same one-of-two-paths gap as the priority rule below.
+case "$(run_sl 120 "$P_SEVEN_BINDING")" in *"${esc}[38;2;214;122;255m"*) c=0 ;; *) c=1 ;; esac
+assert "fable: landmark colored on the truecolor path" "$c"
+fable_256=$(run_sl_256 120 "$P_SEVEN_BINDING")
+case "$fable_256" in *"${esc}[38;5;177m"*) c=0 ;; *) c=1 ;; esac
+assert "fable: landmark colored on the 256 ramp" "$c"
+
+# Cell-collision priority: clock > projection > Fable landmark. The clock and the
+# landmark both index as pct*N/100, so a clock at 50% lands on exactly the
+# landmark cell for ANY bar width — this collision is guaranteed, not width-luck.
+# Needs a live resets_at (half a 7d window out) because the FAR_FUTURE sentinel
+# pins the clock to 0%; that makes "time left" wall-clock-dependent, so this is
+# an assertion rather than a snapshot.
+HALF_7D=$(($(date +%s) + 5040 * 60))
+P_CLOCK_COLLIDE='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":60,"resets_at":'"$HALF_7D"'}}}'
+collide_bar=$(bar_of "$(run_sl 120 "$P_CLOCK_COLLIDE" | strip_ansi)" 7d)
+fable_absent "$collide_bar"
+assert "fable: yields its cell to the clock pip" "$?"
+case "$collide_bar" in *'|'*) c=0 ;; *) c=1 ;; esac
+assert "fable: ...and the clock pip renders there instead" "$c"
+
+# ...and the other half of the priority rule: projection also outranks the
+# landmark. Needs its own payload, since the clock case above pins proj to 120%
+# (overflow, last cell) and never contends for cell 50. At 20% used with 60% of
+# the window left the clock is 40% and the projection is 20*100/40 = 50 — landing
+# the '*' exactly on the landmark cell, again for any bar width.
+SIXTY_PCT_7D=$(($(date +%s) + 6048 * 60))
+P_PROJ_COLLIDE='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":20,"resets_at":'"$SIXTY_PCT_7D"'}}}'
+proj_bar=$(bar_of "$(run_sl 120 "$P_PROJ_COLLIDE" | strip_ansi)" 7d)
+fable_absent "$proj_bar"
+assert "fable: yields its cell to the projection pip" "$?"
+case "$proj_bar" in *'*'*) c=0 ;; *) c=1 ;; esac
+assert "fable: ...and the projection pip renders there instead" "$c"
 
 # ── Width discipline: no line may exceed COLUMNS ─────────────────────────────
 # The bars stretch to fill the row, so the width math must reserve room for each
