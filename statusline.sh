@@ -7,9 +7,11 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
 # Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff vim style]
+#   Line 1: owner/repo [@branch(/wt) counters][name +N/-M $cost]
+#           [model ctx eff vim style][telem tag]
 #           — identity + config folded onto one row of colored [] groups, ONE
-#           GROUP PER CONCEPT: git state, then this session, then this config.
+#           GROUP PER CONCEPT: git state, then this session, then this config,
+#           then whether this repo's usage is attributed in telemetry.
 #           Groups pack left-to-right and wrap to a continuation line only when
 #           they won't fit the pane. No PR chip — Claude Code surfaces the PR.
 #           Members are space-separated inside their []; git counters are colored
@@ -427,7 +429,7 @@ fi
 # GIT_OPTIONAL_LOCKS=0: this runs on every refresh in the background — it must
 # never contend for index.lock with the session's own git rebase/add.
 export GIT_OPTIONAL_LOCKS=0
-git_is_repo=0 branch="" repo_https="" repo_name="" git_worktree_name=""
+git_is_repo=0 branch="" repo_https="" repo_name="" repo_slug="" git_worktree_name=""
 ahead=0 behind=0 staged=0 unstaged=0 untracked=0 conflict=0 stash=0
 
 if topl=$(git rev-parse --show-toplevel 2> /dev/null) && [ -n "$topl" ]; then
@@ -479,16 +481,107 @@ if topl=$(git rev-parse --show-toplevel 2> /dev/null) && [ -n "$topl" ]; then
   if [ -n "$repo_host" ] && [ -n "$repo_owner" ] && [ -n "$repo_name_input" ]; then
     repo_https="https://${repo_host}/${repo_owner}/${repo_name_input}"
     repo_name=$repo_name_input
+    repo_slug="${repo_owner}/${repo_name_input}"
   else
     remote=$(git remote get-url origin 2> /dev/null)
     if [ -n "$remote" ]; then
       repo_https=${remote/git@github.com:/https:\/\/github.com\/}
+      # Trailing slashes first, then `.git`, so `…/repo.git/` reduces to `…/repo`
+      # (basename tolerates a trailing slash but the owner parse below would read it
+      # as an empty last segment and call the repo its own owner).
+      while [ "${repo_https%/}" != "$repo_https" ]; do repo_https=${repo_https%/}; done
       repo_https=${repo_https%.git}
       repo_name=$(basename "$repo_https")
+      # Owner from the URL path: the segment immediately BEFORE the repo, not the
+      # first one — a path deeper than <owner>/<repo> is common (GitLab subgroups,
+      # Bitbucket's /scm/<project>/<repo>) and taking the first segment there
+      # promotes a prefix into the owner slot ("scm/myrepo"). Strip the host, then
+      # the last segment is the repo and the one before it is the owner. A path with
+      # nothing before the repo — a top-level repo — yields no owner, and the title
+      # falls back to the bare repo name rather than labelling something else as one.
+      #
+      # Gated on an http(s) URL: only there does the first segment denote a host that
+      # must be stripped. A local-path remote (`/Users/me/src/upstream`, a sibling
+      # clone) or a non-GitHub SSH remote (`git@host:path`, which the rewrite above
+      # leaves alone) has no host segment to drop, so the same parse would promote a
+      # parent directory into the owner slot — the exact failure this guard prevents.
+      case "$repo_https" in
+        http://*/*/* | https://*/*/*)
+          _path=${repo_https#*://}
+          _path=${_path#*/}
+          case "$_path" in
+            */*)
+              _owner=${_path%/*}
+              _owner=${_owner##*/}
+              [ -n "$_owner" ] && repo_slug="${_owner}/${repo_name}"
+              ;;
+          esac
+          ;;
+      esac
     fi
   fi
 
   stash=$(git stash list 2> /dev/null | grep -c .)
+fi
+
+# ── Telemetry tag (project.name OTEL attribute) ─────────────────────────────
+# Gnar attributes Claude Code usage per project through a `project.name=` entry in
+# OTEL_RESOURCE_ATTRIBUTES, set in the repo's own .claude/settings.json (that's what
+# the toolkit plugin's /toolkit:project-telem-tag writes). A repo without it lands
+# in the dashboard as "(untagged)" — a silent gap nobody notices until they go
+# looking for that project's spend — so line 1 reports which side of that this repo
+# is on: `telem_state` is "tagged", "untagged", or "" for don't-render.
+#
+# Detection mirrors the toolkit SessionStart hook (project-telem-tag-check.sh) so
+# the chip and the nudge can never disagree: live env first, then the repo's
+# checked-in settings, then its local override. Only inside a git repo — outside
+# one there's no project to tag, so the cell has nothing to say.
+#
+# Cheap by construction, because this runs on every refresh: when the repo IS
+# tagged Claude Code exports the attribute into our env, so the common case
+# answers from a `case` with zero I/O; when it's untagged there's usually no
+# settings file to read; a jq read happens only for a file that exists (0 files ->
+# 0 forks, the usual 1 -> 1). A jq failure (unreadable or malformed settings) yields
+# no value and so reads as untagged — the same fail-toward-nudging choice the hook
+# makes. Read per-file rather than one jq over both, because jq aborts the whole run
+# on the first parse error: a malformed settings.json would otherwise mask a valid
+# tag in settings.local.json.
+#
+# Later file wins, but only when it actually defines the attribute — that's Claude
+# Code's own env merge (settings.local.json over settings.json), so a local override
+# that replaces the attribute without a project.name correctly reads as untagged.
+# The hook takes the first match instead; the two can't disagree in practice, since
+# whenever any settings file defines the attribute Claude Code exports the merged
+# value and the env branch above answers before either file is read.
+TELEM_URL='https://telem.thegnar.info'
+# Opt-out: unset and 0 both mean "show". A bare -n test would make
+# CLAUDE_STATUSLINE_HIDE_TELEM=0 hide the chip, which is the opposite of what
+# anyone writing that means, and unlike the script's other knobs, which read values.
+telem_hidden=0
+case "$CLAUDE_STATUSLINE_HIDE_TELEM" in '' | 0) ;; *) telem_hidden=1 ;; esac
+telem_state=""
+if [ "$git_is_repo" -eq 1 ] && [ "$telem_hidden" -eq 0 ]; then
+  case "$OTEL_RESOURCE_ATTRIBUTES" in
+    *project.name=*) telem_state=tagged ;;
+    *)
+      telem_state=untagged
+      _attrs=""
+      for _settings in "$topl/.claude/settings.json" "$topl/.claude/settings.local.json"; do
+        [ -f "$_settings" ] || continue
+        # jq answers "is it defined, and to what" in one string: "=<value>" when the
+        # key is present (so an explicit "" comes back as a bare "="), and empty when
+        # it's absent or the file won't parse. A bare `// ""` couldn't tell those
+        # apart, and an explicitly-emptied local override then failed to clear the
+        # repo's tag — the chip stayed green on a session reported as untagged.
+        _v=$(jq -r '(.env // {}) as $e
+          | if ($e | has("OTEL_RESOURCE_ATTRIBUTES"))
+            then "=" + ($e.OTEL_RESOURCE_ATTRIBUTES | tostring) else "" end' \
+          "$_settings" 2> /dev/null)
+        [ -n "$_v" ] && _attrs=${_v#=}
+      done
+      case "$_attrs" in *project.name=*) telem_state=tagged ;; esac
+      ;;
+  esac
 fi
 
 # Autocompact threshold (env override, else 80).
@@ -537,18 +630,36 @@ fi
 # Everything Claude Code reports about "where am I / how am I configured" folds
 # onto a single row of colored [] groups. A group is a CONCEPT, not a field: one
 # bracket for git state (branch/worktree + counters), one for this session (name,
-# churn, cost), one for this config (model, ctx flag, effort, style, vim mode).
-# The groups pack left-to-right and spill to a continuation line only when they
-# exceed the pane, so the common case is one row (a row saved vs. the old
-# title+model split), and related cells read as one cell instead of a bracket run.
-# Title: repo name (linked) or the cwd's last two components, truncated to the
-# pane so an enormous name can't overflow on its own.
-if [ -n "$repo_name" ]; then title_txt=$repo_name; else title_txt=$dir_disp; fi
-[ -n "$cols" ] && title_txt=$(trunc_mid "$title_txt" "$cols")
-if [ -n "$repo_name" ]; then
-  id_part="${BOLD}${NEAR_WHITE}$(osc8 "$repo_https" "$title_txt")${RST}"
+# churn, cost), one for this config (model, ctx flag, effort, style, vim mode), and
+# one for telemetry coverage. The groups pack left-to-right and spill to a
+# continuation line only when they exceed the pane, so the common case is one row (a
+# row saved vs. the old title+model split), and related cells read as one cell
+# instead of a bracket run.
+# Title: the repo as owner/name (linked), else the bare repo name, else the cwd's
+# last two components — truncated to the pane so an enormous name can't overflow on
+# its own. owner/name because a bare name is ambiguous across orgs (this repo and
+# the one it was seeded from are both "claude-statusline"), and because it's the
+# same identity the telemetry tag uses: project.name=owner/repo.
+if [ -n "$repo_slug" ]; then
+  title_txt=$repo_slug
+elif [ -n "$repo_name" ]; then
+  title_txt=$repo_name
 else
-  id_part="${BOLD}${NEAR_WHITE}${title_txt}${RST}"
+  title_txt=$dir_disp
+fi
+[ -n "$cols" ] && title_txt=$(trunc_mid "$title_txt" "$cols")
+# The owner renders muted so the repo name stays the row's visual anchor and the
+# extra columns don't shout. Once the slug has been ellipsized that split no longer
+# holds (the ".." can land anywhere in it), so a truncated title renders as one run.
+if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
+  title_disp="${MUTED}${repo_slug%/*}/${RST}${BOLD}${NEAR_WHITE}${repo_slug##*/}${RST}"
+else
+  title_disp="${BOLD}${NEAR_WHITE}${title_txt}${RST}"
+fi
+if [ -n "$repo_https" ]; then
+  id_part=$(osc8 "$repo_https" "$title_disp")
+else
+  id_part=$title_disp
 fi
 
 # Bracket groups are assembled as (display, visible-length) segments, then packed
@@ -924,6 +1035,28 @@ if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ] && [ -z "
   style_txt=$(trunc_mid "$output_style" "$branch_max")
 fi
 [ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
+gflush
+
+# ── Group 4: telemetry coverage ─────────────────────────────────────────────
+# [telem tag] green when this repo's Claude Code usage is attributed to a project in
+# the dashboard, [no telem tag] yellow when it isn't and the usage lands there under
+# "(untagged)" (fix: /toolkit:project-telem-tag). Both are OSC8 links to the
+# dashboard itself, so the cell answers "am I covered?" and ⌘-click goes to where the
+# answer matters. Two states rather than nag-only: a chip that only ever appears as a
+# warning leaves you unable to tell "covered" from "this statusline is too old to
+# know".
+#
+# Its own group rather than a member of the git one: it's a fact about the project,
+# not about the working tree, and it must not share a bracket whose over-wide shed
+# could drop it — or drop branch state to keep it. Last on purpose, too: it renders
+# on every refresh inside a git repo, and the packer spills whole groups in order, so
+# anywhere earlier would push git state onto a continuation line on a narrow pane to
+# make room for a cell that rarely changes. Trailing, it's the first thing to spill.
+# CLAUDE_STATUSLINE_HIDE_TELEM=1 drops it entirely.
+case "$telem_state" in
+  tagged) gadd "${GREEN}$(osc8 "$TELEM_URL" 'telem tag')${RST}" 'telem tag' ;;
+  untagged) gadd "${YELLOW}$(osc8 "$TELEM_URL" 'no telem tag')${RST}" 'no telem tag' ;;
+esac
 gflush
 
 # Pack the groups onto lines: the title starts line 1; each group joins the
