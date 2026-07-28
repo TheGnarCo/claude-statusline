@@ -7,7 +7,7 @@ Targets macOS system bash (3.2) so it's a portable drop-in.
 ## What it shows
 
 ```
-claude-statusline [reviewer][@main/wt][?1 !2 +3][+42/-7][Opus 4.8 1M High Explanatory][N][$1.23 ($7.38/h)]
+claude-statusline [@main/wt ?1 !2 +3][reviewer +42/-7 $1.23 ($7.38/h)][Opus 4.8 1M High Explanatory N]
 CTX ####--------------------|-----  13% 128k/1M cache 78% 67%->AC
 5h  |###########------------------  40% 3h 12m left [+8%] 7d 22%
 ```
@@ -18,14 +18,10 @@ small margin so they never overrun Claude's own chrome. The layout stays compact
 lines** — identity and config share one row of colored `[]` groups, and the 7-day window
 shows only when it's the binding one.
 
-- **Line 1** — one packed row of colored `[]` groups that wrap to a continuation line only when they won't fit the pane:
-  - **`[name]`** — session/agent name for orienting among many concurrent tabs: `agent.name` (a spawned/`--agent` context, magenta) wins over your `session_name` (cyan) when both are set.
-  - **`[@branch/worktree]`** — repo (title, links to GitHub), branch (links to the tree), and worktree. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget.
-  - **`[counters]`** — git state as colored ASCII sigils, space-separated: `*`stash `x`conflict `?`untracked `!`modified `+`staged `^`ahead `v`behind (e.g. `[?1 !2 +3]`).
-  - **`[+added/-removed]`** — session churn.
-  - **`[model 1M effort style]`** — model, context-window flag (`1M` for the extended window), reasoning effort (`XHi`/`Max` for the high tiers), output style.
-  - **`[N]`** — vim mode (`N`/`I`/`V`/`V-L`), colored by mode; shown only when vim mode is on.
-  - **`[$cost ($/h)]`** — session cost + per-hour burn.
+- **Line 1** — the repo/dir title, then **one `[]` per concept** — a bracket is a group of related cells, not a single field, so the eye stops three times instead of seven. Groups pack left-to-right and wrap to a continuation line only when they won't fit the pane. Members are space-separated, each keeping its own color, and any member with nothing to say drops out (an all-empty group renders no bracket at all):
+  - **`[@branch/worktree counters]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `*`stash `x`conflict `?`untracked `!`modified `+`staged `^`ahead `v`behind — e.g. `[@main/wt ?1 !2 +3]`. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget. (The repo name is the line's title and links to GitHub.)
+  - **`[name +added/-removed $cost ($/h)]`** — **this session**. The name orients you among many concurrent tabs: `agent.name` (a spawned/`--agent` context, magenta) wins over your `session_name` (cyan) when both are set. Then this session's churn, and its cost + per-hour burn.
+  - **`[model 1M effort style vim]`** — **this config**. Model, context-window flag (`1M` for the extended window), reasoning effort (`XHi`/`Max` for the high tiers), output style, and vim mode (`N`/`I`/`V`/`V-L`, colored by mode, shown only when vim mode is on).
 
   (No PR cell — Claude Code already surfaces the current PR.)
 - **Line 2** — context window with a blackbody-gradient bar; an amber cell marks the autocompact threshold. The `%` escalates green→amber→red as it approaches; below the threshold a `N%->AC` badge shows live headroom, and once crossed a `[AC]` chip (plus `[200k+]` past 200k tokens). Trailing `Nk/Nk` is tokens-in-context / window size, and `cache N%` is the share served from the prompt cache.

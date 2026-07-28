@@ -89,8 +89,9 @@ P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens"
 P_FRESH='{"workspace":{"current_dir":"/work/scratch/tmp"},"context_window":{"used_percentage":3,"total_input_tokens":8000,"context_window_size":200000},"model":{"display_name":"Haiku 4.5"}}'
 
 # Rich line-1: agent.name (wins over session_name), vim mode, and the xhigh effort
-# tier — exercises the fields folded onto line 1 by the compact layout. agent name
-# -> [name] chip; vim NORMAL -> [N]; effort xhigh -> "XHi" (not "Xhigh").
+# tier — exercises the fields folded onto line 1 by the compact layout, and locks
+# the concept grouping: agent name joins churn/cost in the session group, vim
+# NORMAL -> "N" joins the config group, effort xhigh -> "XHi" (not "Xhigh").
 P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"vim":{"mode":"NORMAL"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
 
 # ── Cases (non-git) ────────────────────────────────────────────────────────
@@ -178,10 +179,11 @@ P_LONGBRANCH='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"conte
 snapshot longbranch-trunc 100 "$P_LONGBRANCH"
 
 # ── Line 1 hard-bound + wrap (git, dirty, long branch) ───────────────────────
-# Dirty the repo so line 1 carries branch + counters + lines-changed groups;
-# with the long branch that's wider than a narrow pane, this exercises the wrap
-# to a continuation line. Line 1 must never exceed COLUMNS at any width, and the
-# 60-col snapshot locks the wrapped layout.
+# Dirty the repo so line 1 carries the git group (branch + counters) and the
+# session group (lines changed); with the long branch that's wider than a narrow
+# pane, this exercises the wrap to a continuation line. Line 1 must never exceed
+# COLUMNS at any width, and the 60-col snapshot locks the wrapped layout — plus
+# the invariant that branch and counters share ONE bracket.
 : > untracked.txt    # -> "1 untracked"
 echo change >> f.txt # -> "1 modified" (unstaged)
 P_DIRTY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_lines_added":120,"total_lines_removed":45}}'

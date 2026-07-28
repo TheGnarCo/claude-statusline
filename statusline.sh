@@ -7,11 +7,13 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
 # Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: repo/dir [name][@branch(/wt)][counters][+N/-M][model ctx eff style][vim][$cost]
-#           — identity + config folded onto one row of colored [] groups that
-#           pack left-to-right and wrap to a continuation line only when they
-#           won't fit the pane. No PR chip — Claude Code surfaces the PR. Git
-#           counters are colored ASCII sigils, space-separated inside the []:
+#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff style vim]
+#           — identity + config folded onto one row of colored [] groups, ONE
+#           GROUP PER CONCEPT: git state, then this session, then this config.
+#           Groups pack left-to-right and wrap to a continuation line only when
+#           they won't fit the pane. No PR chip — Claude Code surfaces the PR.
+#           Members are space-separated inside their []; git counters are colored
+#           ASCII sigils:
 #           *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
 #   Line 2: CTX <bar w/ amber autocompact cell> N% Nk/Nk cache N% N%->AC [200k+]
 #   Line 3: 5h  <bar> N% Xh Ym left [delta]   (+ inline "7d N%" when 7d hidden)
@@ -523,10 +525,12 @@ fi
 
 # ── Line 1 (identity + config, packed onto one row; wraps when it won't fit) ─
 # Everything Claude Code reports about "where am I / how am I configured" folds
-# onto a single row of colored [] groups: session/agent name, branch(/worktree),
-# git counters, session churn, model+ctx+effort+style, vim mode, cost. The groups
-# pack left-to-right and spill to a continuation line only when they exceed the
-# pane, so the common case is one row (a row saved vs. the old title+model split).
+# onto a single row of colored [] groups. A group is a CONCEPT, not a field: one
+# bracket for git state (branch/worktree + counters), one for this session (name,
+# churn, cost), one for this config (model, ctx flag, effort, style, vim mode).
+# The groups pack left-to-right and spill to a continuation line only when they
+# exceed the pane, so the common case is one row (a row saved vs. the old
+# title+model split), and related cells read as one cell instead of a bracket run.
 # Title: repo name (linked) or the cwd's last two components, truncated to the
 # pane so an enormous name can't overflow on its own.
 if [ -n "$repo_name" ]; then title_txt=$repo_name; else title_txt=$dir_disp; fi
@@ -546,26 +550,38 @@ add_seg() {
   seg_len[${#seg_len[@]}]=$2
 }
 
-# Name group: [agent] or [session] — the "which of my many concurrent sessions
-# is this?" orientation cell. agent.name (a spawned/--agent context) wins over
-# the user's session_name when both are set: magenta for an agent, cyan for a
-# named session. Truncated to the branch budget so a long name can't blow the row.
-name_txt="" name_col=""
-if [ -n "$agent_name" ]; then
-  name_txt=$agent_name name_col=$MAGENTA
-elif [ -n "$session_name" ]; then
-  name_txt=$session_name name_col=$CYAN
-fi
-if [ -n "$name_txt" ]; then
-  nt=$(trunc_mid "$name_txt" "$branch_max")
-  add_seg "${MUTED}[${name_col}${BOLD}${nt}${RST}${MUTED}]${RST}" $((2 + ${#nt}))
-fi
+# Group builder: members accumulate into one open group, space-separated, then
+# gflush emits it as a single bracketed segment. Each member carries its own
+# color, so a group stays multi-colored inside one []; the plain twin tracks the
+# visible width (the display string is full of ANSI/OSC8 noise). A group whose
+# every member was empty flushes to nothing — no empty [] on the row.
+_g="" _gp=""
+# gadd <colored> <plain> — append a member; a member with no plain text is a no-op.
+gadd() {
+  [ -z "$2" ] && return
+  if [ -n "$_gp" ]; then _g="${_g} " _gp="${_gp} "; fi
+  _g="${_g}${1}" _gp="${_gp}${2}"
+}
+gflush() {
+  [ -n "$_gp" ] && add_seg "${MUTED}[${RST}${_g}${MUTED}]${RST}" $((2 + ${#_gp}))
+  _g="" _gp=""
+}
+
+# ── Group 1: git ────────────────────────────────────────────────────────────
+# [@<branch>(/<worktree>) <counters>] — everything git knows about this checkout
+# in one cell: branch (blue, linked to the tree), worktree (magenta), then the
+# working-tree counters. They were three brackets; they're one concept, so the
+# eye stops once instead of parsing a bracket run to reassemble "git state".
+#
+# Counters are colored ASCII sigils (untracked cyan, modified yellow, staged
+# green, conflict bold-red, stash magenta, ahead green, behind red) — the glyph +
+# count is ~4x denser than "N untracked, N modified, …". Sigils:
+#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
 
 # Worktree name (Claude's payload first, else the git worktree dir basename).
 wt=$worktree_name_input
 [ -z "$wt" ] && wt=$git_worktree_name
 
-# Branch group: [@<branch>(/<worktree>)] — branch blue/linked, /worktree magenta.
 if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   b=$branch
   [ -z "$b" ] && b="-"
@@ -576,44 +592,47 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   else
     b_disp=$b_txt
   fi
-  glen=$((3 + ${#b_txt})) # "[" + "@" + "]" + branch text
+  b_plain="${SIG_BRANCH}${b_txt}"
   if [ -n "$wt" ]; then
     wt_txt=$(trunc_mid "$wt" "$wt_max")
     b_disp="${b_disp}${MAGENTA}/${wt_txt}"
-    glen=$((glen + 1 + ${#wt_txt})) # "/" + worktree text
+    b_plain="${b_plain}/${wt_txt}"
   fi
-  add_seg "${MUTED}[${BLUE}${BOLD}${SIG_BRANCH}${b_disp}${RST}${MUTED}]${RST}" "$glen"
+  gadd "${BLUE}${BOLD}${SIG_BRANCH}${b_disp}${RST}" "$b_plain"
+fi
+[ "$stash" -gt 0 ] && gadd "${MAGENTA}*${stash}${RST}" "*${stash}"
+[ "$conflict" -gt 0 ] && gadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
+[ "$untracked" -gt 0 ] && gadd "${CYAN}?${untracked}${RST}" "?${untracked}"
+[ "$unstaged" -gt 0 ] && gadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
+[ "$staged" -gt 0 ] && gadd "${GREEN}+${staged}${RST}" "+${staged}"
+[ "$ahead" -gt 0 ] && gadd "${GREEN}^${ahead}${RST}" "^${ahead}"
+[ "$behind" -gt 0 ] && gadd "${RED}v${behind}${RST}" "v${behind}"
+gflush
+
+# ── Group 2: this session ───────────────────────────────────────────────────
+# [<name> +N/-M $cost ($/h)] — who this session is and what it has spent, from
+# the fields Claude Code reports per session. The name is the "which of my many
+# concurrent tabs is this?" orientation cell: agent.name (a spawned/--agent
+# context, magenta) wins over the user's session_name (cyan) when both are set,
+# truncated to the branch budget so a long name can't blow the row. Churn and
+# cost are the same session's totals, so they share the cell rather than trailing
+# it as separate brackets.
+name_txt="" name_col=""
+if [ -n "$agent_name" ]; then
+  name_txt=$agent_name name_col=$MAGENTA
+elif [ -n "$session_name" ]; then
+  name_txt=$session_name name_col=$CYAN
+fi
+if [ -n "$name_txt" ]; then
+  nt=$(trunc_mid "$name_txt" "$branch_max")
+  gadd "${name_col}${BOLD}${nt}${RST}" "$nt"
 fi
 
-# Counters group: colored ASCII sigils, space-separated inside one []. Same
-# colors as the old word form (untracked cyan, modified yellow, staged green,
-# conflict bold-red, stash magenta, ahead green, behind red); the glyph + count
-# is ~4x denser than "N untracked, N modified, …". Sigils:
-#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
-counters="" counters_plain=""
-add_counter() {
-  if [ -z "$counters" ]; then
-    counters=$1 counters_plain=$2
-  else
-    counters="${counters} $1" counters_plain="${counters_plain} $2"
-  fi
-}
-[ "$stash" -gt 0 ] && add_counter "${MAGENTA}*${stash}${RST}" "*${stash}"
-[ "$conflict" -gt 0 ] && add_counter "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
-[ "$untracked" -gt 0 ] && add_counter "${CYAN}?${untracked}${RST}" "?${untracked}"
-[ "$unstaged" -gt 0 ] && add_counter "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
-[ "$staged" -gt 0 ] && add_counter "${GREEN}+${staged}${RST}" "+${staged}"
-[ "$ahead" -gt 0 ] && add_counter "${GREEN}^${ahead}${RST}" "^${ahead}"
-[ "$behind" -gt 0 ] && add_counter "${RED}v${behind}${RST}" "v${behind}"
-[ -n "$counters" ] && add_seg "${MUTED}[${RST}${counters}${MUTED}]${RST}" $((2 + ${#counters_plain}))
-
-# Lines-changed group: [+added/-removed].
 if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
-  lc_plain="+${lines_added}/-${lines_removed}"
-  add_seg "${MUTED}[${GREEN}${BOLD}+${lines_added}${RST}${MUTED}/${RED}${BOLD}-${lines_removed}${RST}${MUTED}]${RST}" $((2 + ${#lc_plain}))
+  gadd "${GREEN}${BOLD}+${lines_added}${RST}${MUTED}/${RED}${BOLD}-${lines_removed}${RST}" \
+    "+${lines_added}/-${lines_removed}"
 fi
 
-# ── Config groups (folded onto the same row as identity) ─────────────────────
 # Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
 money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
   if (c ~ /^[0-9]+(\.[0-9]+)?$/) {
@@ -621,67 +640,63 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
     if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
   }
 }')
+gadd "${GREEN}${money}${RST}" "$money"
+gflush
 
-# Model group: [model ctxflag effort style], each sub-segment its own color.
-if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
-  model_short="${model_name%% (*}" # short name: drop the " (...)" suffix
-  # Context flag: prefer the authoritative context_window_size — anything past
-  # the 200k default becomes a flag (abbrev_num(1000000) -> "1M"). Fall back to
-  # the model-name parenthetical whenever the size field yields no flag (absent,
-  # or a build that reports the default size while the 1M beta is active), so the
-  # extended-window indicator is never silently dropped.
-  ctx_flag=""
-  if [ "$ctx_window_size" -gt 200000 ]; then
-    ctx_flag="$(abbrev_num "$ctx_window_size")"
-  fi
-  if [ -z "$ctx_flag" ]; then
-    case "$model_name" in
-      *\(*\)*)
-        ctx_flag="${model_name#*(}"
-        ctx_flag="${ctx_flag%%)*}"
-        ctx_flag="${ctx_flag%% context}" # "1M context" -> "1M"
-        ;;
-    esac
-  fi
-  # Effort: title-case the first letter, but the multi-char tiers read wrong that
-  # way ("Xhigh"/"Max"), so map those to compact labels.
-  case "$effort_level" in
-    "") effort_cap="" ;;
-    xhigh) effort_cap="XHi" ;;
-    max) effort_cap="Max" ;;
-    *) effort_cap="$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')${effort_level:1}" ;;
+# ── Group 3: this config ────────────────────────────────────────────────────
+# [<model> <ctxflag> <effort> <style> <vim>] — every knob that decides how this
+# session behaves, in one cell: model (cyan), extended-context flag (yellow),
+# reasoning effort (green), output style (magenta), vim mode (mode-colored). The
+# vim chip lived in its own bracket, but it is a config knob like the rest.
+model_short="${model_name%% (*}" # short name: drop the " (...)" suffix
+
+# Context flag: prefer the authoritative context_window_size — anything past the
+# 200k default becomes a flag (abbrev_num(1000000) -> "1M"). Fall back to the
+# model-name parenthetical whenever the size field yields no flag (absent, or a
+# build that reports the default size while the 1M beta is active), so the
+# extended-window indicator is never silently dropped.
+ctx_flag=""
+if [ "$ctx_window_size" -gt 200000 ]; then
+  ctx_flag="$(abbrev_num "$ctx_window_size")"
+fi
+if [ -z "$ctx_flag" ]; then
+  case "$model_name" in
+    *\(*\)*)
+      ctx_flag="${model_name#*(}"
+      ctx_flag="${ctx_flag%%)*}"
+      ctx_flag="${ctx_flag%% context}" # "1M context" -> "1M"
+      ;;
   esac
-
-  # Assemble the group's colored display + a plain twin for the packer's width.
-  mseg="" mseg_plain=""
-  madd() {
-    [ -z "$1" ] && return
-    if [ -n "$mseg" ]; then mseg="${mseg} " mseg_plain="${mseg_plain} "; fi
-    mseg="${mseg}${2}${1}${RST}" mseg_plain="${mseg_plain}${1}"
-  }
-  madd "$model_short" "$CYAN"
-  madd "$ctx_flag" "$YELLOW"
-  madd "$effort_cap" "$GREEN"
-  madd "$output_style" "$MAGENTA"
-  [ -n "$mseg" ] && add_seg "${MUTED}[${RST}${mseg}${MUTED}]${RST}" $((2 + ${#mseg_plain}))
 fi
 
-# Vim-mode chip: [N]/[I]/[V]/[V-L] colored by mode (the vim-statusline idiom).
-if [ -n "$vim_mode" ]; then
-  case "$vim_mode" in
-    NORMAL) vm=N vm_col=$BLUE ;;
-    INSERT) vm=I vm_col=$GREEN ;;
-    VISUAL) vm=V vm_col=$MAGENTA ;;
-    "VISUAL LINE") vm=V-L vm_col=$MAGENTA ;;
-    "VISUAL BLOCK") vm=V-B vm_col=$MAGENTA ;;
-    REPLACE) vm=R vm_col=$RED ;;
-    *) vm=${vim_mode:0:1} vm_col=$MUTED ;;
-  esac
-  add_seg "${MUTED}[${vm_col}${BOLD}${vm}${RST}${MUTED}]${RST}" $((2 + ${#vm}))
-fi
+# Effort: title-case the first letter, but the multi-char tiers read wrong that
+# way ("Xhigh"/"Max"), so map those to compact labels.
+case "$effort_level" in
+  "") effort_cap="" ;;
+  xhigh) effort_cap="XHi" ;;
+  max) effort_cap="Max" ;;
+  *) effort_cap="$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')${effort_level:1}" ;;
+esac
 
-# Cost group: [$total ($/h)] in green.
-[ -n "$money" ] && add_seg "${MUTED}[${GREEN}${money}${RST}${MUTED}]${RST}" $((2 + ${#money}))
+# Vim mode: N/I/V/V-L colored by mode (the vim-statusline idiom).
+vm="" vm_col=""
+case "$vim_mode" in
+  "") ;;
+  NORMAL) vm=N vm_col=$BLUE ;;
+  INSERT) vm=I vm_col=$GREEN ;;
+  VISUAL) vm=V vm_col=$MAGENTA ;;
+  "VISUAL LINE") vm=V-L vm_col=$MAGENTA ;;
+  "VISUAL BLOCK") vm=V-B vm_col=$MAGENTA ;;
+  REPLACE) vm=R vm_col=$RED ;;
+  *) vm=${vim_mode:0:1} vm_col=$MUTED ;;
+esac
+
+gadd "${CYAN}${model_short}${RST}" "$model_short"
+gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
+gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
+gadd "${MAGENTA}${output_style}${RST}" "$output_style"
+gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
+gflush
 
 # Pack the groups onto lines: the title starts line 1; each group joins the
 # current line when it still fits within `cols`, otherwise it starts a fresh
