@@ -782,8 +782,18 @@ if [ -n "$name_txt" ]; then
 fi
 
 if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
-  gadd "${GREEN}${BOLD}+${lines_added}${RST}${MUTED}/${RED}${BOLD}-${lines_removed}${RST}" \
-    "+${lines_added}/-${lines_removed}"
+  # Churn can lead this group too (no name is the default), and a first member is
+  # never shed — so it has to fit the row on its own. Digits are the one member
+  # that must not be ellipsized: "+12..56" reads as a real number. Abbreviate
+  # instead, the same way token counts already are, which stays honest about
+  # magnitude: +123456/-654321 -> +123k/-654k.
+  ch_add=$lines_added ch_del=$lines_removed
+  if [ -n "$cols" ] && [ $((${#ch_add} + ${#ch_del} + 3)) -gt $((cols - 5)) ]; then
+    ch_add=$(abbrev_num "$lines_added")
+    ch_del=$(abbrev_num "$lines_removed")
+  fi
+  gadd "${GREEN}${BOLD}+${ch_add}${RST}${MUTED}/${RED}${BOLD}-${ch_del}${RST}" \
+    "+${ch_add}/-${ch_del}"
 fi
 
 # Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
@@ -808,7 +818,7 @@ gflush
 # ── Group 3: this config ────────────────────────────────────────────────────
 # [<model> <ctxflag> <effort> <vim> <style>] — every knob that decides how this
 # session behaves, in one cell: model (cyan), extended-context flag (yellow),
-# reasoning effort (green), output style (magenta), vim mode (mode-colored). The
+# reasoning effort (green), vim mode (mode-colored), output style (magenta). The
 # vim chip lived in its own bracket, but it is a config knob like the rest.
 # Short name: drop the " (...)" suffix. Capped to the branch budget because it is
 # this group's first member, and gflush can never shed the first member.

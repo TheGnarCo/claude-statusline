@@ -162,17 +162,24 @@ GITREPO=$(mktemp -d)
 # core.hooksPath=/dev/null + --no-verify keep any globally-configured hooks
 # (e.g. gitleaks) from firing and leaking output into the test run.
 (
-  cd "$GITREPO" || exit 2
+  set -e
+  cd "$GITREPO"
   git init -q
   git checkout -q -b feature/some-really-long-branch-name-goes-here 2> /dev/null
   : > f.txt
   git add f.txt
   git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null \
     commit -q --no-verify -m init
-) > /dev/null 2>&1 || {
-  printf 'FAIL     git fixture setup\n'
+) > /dev/null 2>&1
+fixture_st=$?
+# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
+# that is the left operand of ||, and without it the subshell's status is just
+# its last command's — so that guard could never fire and the asserts below it
+# went vacuous. Capture the status instead.
+if [ "$fixture_st" -ne 0 ]; then
+  printf 'FAIL     git fixture setup (exit %s)\n' "$fixture_st"
   FAIL=$((FAIL + 1))
-}
+fi
 cd "$GITREPO" || exit 2
 # Payload supplies a stable title dir; git supplies the (long) branch.
 P_LONGBRANCH='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
@@ -243,8 +250,13 @@ P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree"
 # has to be ALONE in its group to be the first member, which is the ordinary shape
 # of a session that has spent money without editing files.
 P_L1_COST_ONLY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
+# 6-digit churn with no name: churn leads the group, and digits are the one member
+# that cannot be ellipsized (a truncated number reads as a real one), so it
+# abbreviates instead. Also guards the marker: at COLUMNS=26 an over-wide first
+# member made the best-effort " .." gate suppress the marker on a real drop.
+P_L1_CHURN_BIG='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_lines_added":123456,"total_lines_removed":654321}}'
 l1_budget_overflow=0
-for pw in "$P_DIRTY" "$P_L1_MAX" "$P_L1_COST_ONLY"; do
+for pw in "$P_DIRTY" "$P_L1_MAX" "$P_L1_COST_ONLY" "$P_L1_CHURN_BIG"; do
   for w in 24 26 30 40 60 80 100 120 160 200; do
     max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
     [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
@@ -275,6 +287,8 @@ COUNTERS=$(mktemp -d) BARE=$(mktemp -d) CLONE=$(mktemp -d)
 trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE"' EXIT
 tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
 (
+  set -e # without this the subshell's status is its LAST command's, so the
+  # `|| { FAIL ... }` guard below never fires and the asserts go vacuous
   git init -q --bare "$BARE/claude-statusline.git"
   cd "$COUNTERS" || exit 2
   git init -q
@@ -306,16 +320,24 @@ tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hook
   # conflict: merge the diverged upstream and leave the UU in the index
   echo mine >> f4.txt
   tg commit -q --no-verify -am mine
-  tg merge -q origin/feature/some-really-long-branch-name
+  # Expected to exit non-zero — the conflict IS the point, and under set -e it
+  # would otherwise abort the fixture before the staged/modified/untracked steps.
+  tg merge -q origin/feature/some-really-long-branch-name || true
   # staged, modified, untracked
   echo st > f2.txt && tg add f2.txt
   echo mo >> f3.txt
   : > untracked1.txt
   : > untracked2.txt
-) > /dev/null 2>&1 || {
-  printf 'FAIL     all-counters git fixture setup\n'
+) > /dev/null 2>&1
+fixture_st=$?
+# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
+# that is the left operand of ||, and without it the subshell's status is just
+# its last command's — so that guard could never fire and the asserts below it
+# went vacuous. Capture the status instead.
+if [ "$fixture_st" -ne 0 ]; then
+  printf 'FAIL     all-counters git fixture setup (exit %s)\n' "$fixture_st"
   FAIL=$((FAIL + 1))
-}
+fi
 cd "$COUNTERS" || exit 2
 
 # Sanity-check the fixture itself: if it stopped producing all seven counters the
@@ -409,7 +431,10 @@ assert "git group: worktree visibility is monotonic in width" "$nonmono"
 SLASHLESS=$(mktemp -d)
 trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$SLASHLESS"' EXIT
 (
-  cd "$SLASHLESS" || exit 2
+  set -e # see the note on the COUNTERS fixture: without it a failed git step
+  # leaves every render in a non-git dir, blen stays 0, and the monotonicity
+  # assert below reports ok while measuring nothing
+  cd "$SLASHLESS"
   git init -q
   git checkout -q -b averyveryverylongbranchnamewithnoslashes
   : > f.txt
@@ -417,11 +442,24 @@ trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$SLASHLESS"' EXI
   tg commit -q --no-verify -m init
   : > untracked.txt
   echo change >> f.txt
-) > /dev/null 2>&1 || {
-  printf 'FAIL     slashless-branch fixture setup\n'
+) > /dev/null 2>&1
+fixture_st=$?
+# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
+# that is the left operand of ||, and without it the subshell's status is just
+# its last command's — so that guard could never fire and the asserts below it
+# went vacuous. Capture the status instead.
+if [ "$fixture_st" -ne 0 ]; then
+  printf 'FAIL     slashless-branch fixture setup (exit %s)\n' "$fixture_st"
   FAIL=$((FAIL + 1))
-}
+fi
 cd "$SLASHLESS" || exit 2
+
+# Prove the fixture renders a branch at all before measuring its length — the
+# COUNTERS fixture has its "all seven counters" assert for this; this one had
+# nothing, so a broken fixture would sweep 0-length branches and report ok.
+sane=$(run_sl 100 '{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}' | strip_ansi | line1_block | sed -n 's/.*\[@\([^]]*\)\].*/\1/p' | head -1)
+assert "fixture: slashless-branch fixture renders a branch" "$([ ${#sane} -ge 20 ] && echo 0 || echo 1)"
+
 branch_shrank=0
 # Step 4 rather than 1: a decrease anywhere shows up between whichever two sampled
 # widths bracket it, so subsampling still catches the regression this guards
