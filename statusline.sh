@@ -631,7 +631,12 @@ gflush() {
     disp="${disp}${_gm_disp[i]}" plain="${plain}${_gm_plain[i]}"
   done
   if [ "$elided" -eq 1 ]; then
-    disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
+    # Best-effort: an unmarked elision is bad, but overrunning the row is worse
+    # (that is the wrap CHROME_MARGIN exists to prevent). Only reachable when the
+    # unsheddable first member already fills the row.
+    if [ -z "$cols" ] || [ $((${#plain} + 5)) -le "$cols" ]; then
+      disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
+    fi
   fi
 
   add_seg "${MUTED}[${RST}${disp}${MUTED}]${RST}" $((2 + ${#plain}))
@@ -788,6 +793,15 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
     if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
   }
 }')
+# The cost cell can be the group's FIRST member when no session/agent name is set
+# (the default), and gflush never sheds a first member — so it has to fit on its
+# own. Drop the derived per-hour burn before the total, which is the half you
+# cannot reconstruct from the other.
+# Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
+# it here dropped the burn rate at COLUMNS=60, where it fits fine.
+if [ -n "$cols" ] && [ ${#money} -gt $((cols - 5)) ]; then
+  money=${money%% (*}
+fi
 gadd "${GREEN}${money}${RST}" "$money"
 gflush
 
@@ -862,7 +876,10 @@ if [ "$show_model" -eq 1 ]; then
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
 fi
 gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
-[ "$show_model" -eq 1 ] && gadd "${MAGENTA}${output_style}${RST}" "$output_style"
+# Capped for the same reason: with no model reported, the style becomes this
+# group's first member.
+style_txt=$(trunc_mid "$output_style" "$branch_max")
+[ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
 gflush
 
 # Pack the groups onto lines: the title starts line 1; each group joins the

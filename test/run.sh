@@ -232,8 +232,19 @@ P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree"
 # the row itself there, and it caps every group's FIRST member — the one gflush
 # can never shed — so an unclamped floor overran the row on that member alone
 # (19 cols into a 14-col budget at COLUMNS=22). Sweeping only 60+ missed it.
+#
+# P_L1_MAX_NONAME drops session_name, which is the DEFAULT state and shifts the
+# session group's first member from the capped name to the untruncated churn/cost
+# string — a hole neither other payload reaches (P_L1_MAX always sets the name,
+# P_DIRTY's churn is only 10 columns). The cost cell rendered 19 columns into a
+# 16-column budget before the per-hour burn learned to drop itself.
+# Dropping the name is NOT enough on its own: P_L1_MAX still has churn, which
+# becomes the first member and shields the cost behind gflush's shedding. The cost
+# has to be ALONE in its group to be the first member, which is the ordinary shape
+# of a session that has spent money without editing files.
+P_L1_COST_ONLY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
 l1_budget_overflow=0
-for pw in "$P_DIRTY" "$P_L1_MAX"; do
+for pw in "$P_DIRTY" "$P_L1_MAX" "$P_L1_COST_ONLY"; do
   for w in 24 26 30 40 60 80 100 120 160 200; do
     max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
     [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
