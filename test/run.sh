@@ -245,7 +245,10 @@ snapshot line1-shed 60 "$P_L1_MAX"
 # silent counter drop shipped. This fixture carries all seven at once, which needs
 # a real upstream (ahead/behind), a stash, and a conflicted merge:
 #
-#   *stash  x conflict  ? untracked  ! modified  + staged  ^ ahead  v behind
+#   x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
+#
+# That order is the invariant the assertions below enforce: it is most-urgent
+# first, and since gflush sheds from the tail it is also least-urgent-lost-first.
 #
 # The invariant under test is priority, not just width: inside one unsplittable
 # bracket a counter is atomic data while the names ellipsize, so EVERY counter
@@ -379,6 +382,67 @@ for w in 26 30 34 38 42 44 48 60 80; do
 done
 assert "git group: a short worktree name is kept whenever it fits" "$shortwt_dropped"
 assert "git group: worktree visibility is monotonic in width" "$nonmono"
+
+# Widening the pane must never make any cell SHORTER — the previous check covered
+# worktree visibility but not branch length, and an all-or-nothing worktree drop
+# let COLUMNS 42->44 shorten the branch (10 chars -> the 5-char floor) as the
+# suffix reappeared. Total member length can't detect that (it GREW in that case,
+# 11 -> 15, while the branch halved), so the branch has to be isolated from the
+# "/worktree" suffix — which needs a branch carrying no slash of its own, or a
+# truncated "feature/..name" is indistinguishable from "branch/worktree".
+SLASHLESS=$(mktemp -d)
+trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$SLASHLESS"' EXIT
+(
+  cd "$SLASHLESS" || exit 2
+  git init -q
+  git checkout -q -b averyveryverylongbranchnamewithnoslashes
+  : > f.txt
+  tg add f.txt
+  tg commit -q --no-verify -m init
+  : > untracked.txt
+  echo change >> f.txt
+) > /dev/null 2>&1 || {
+  printf 'FAIL     slashless-branch fixture setup\n'
+  FAIL=$((FAIL + 1))
+}
+cd "$SLASHLESS" || exit 2
+branch_shrank=0
+# Step 4 rather than 1: a decrease anywhere shows up between whichever two sampled
+# widths bracket it, so subsampling still catches the regression this guards
+# (branch 10 -> 5 as the suffix reappeared) without paying for 77 renders, each of
+# which forks git several times. Sweeping every column took the whole suite from
+# ~13s to ~86s; this keeps it near 30s.
+for wtname in a-long-worktree-name wt; do
+  prev_len=0
+  for w in $(seq 24 4 84); do
+    out=$(run_sl "$w" "{\"workspace\":{\"current_dir\":\"/work/proj/x\"},\"worktree\":{\"name\":\"$wtname\"},\"context_window\":{\"used_percentage\":10,\"total_input_tokens\":20000,\"context_window_size\":200000},\"model\":{\"display_name\":\"Opus 4.8\"}}" |
+      strip_ansi | line1_block)
+    bmem=$(printf '%s\n' "$out" | sed -n 's/.*\[@\([^]]*\)\].*/\1/p' | head -1)
+    bmem=${bmem%% *}  # strip the counters, keep "branch[/wt]"
+    bonly=${bmem%%/*} # branch portion (the branch itself has no slash here)
+    blen=${#bonly}
+    if [ "$blen" -lt "$prev_len" ]; then
+      branch_shrank=1
+      printf 'note: branch shrank %s -> %s at COLUMNS=%s (wt=%s)\n' \
+        "$prev_len" "$blen" "$w" "$wtname"
+    fi
+    prev_len=$blen
+  done
+done
+assert "git group: branch length is monotonic in width" "$branch_shrank"
+cd "$COUNTERS" || exit 2
+
+# The vim chip is live state and must outlive a long output-style name when the
+# config group has to shed (display order is shed order, so it is ordered ahead).
+P_VIM_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"vim":{"mode":"INSERT"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Claude Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"}}'
+vim_lost=0
+for w in 44 48 52 56 60; do
+  out=$(run_sl "$w" "$P_VIM_SHED" | strip_ansi | line1_block)
+  case "$out" in *'..'*) ;; *) continue ;; esac # only widths where it sheds
+  # " I" covers the chip both mid-group (" I ") and last (" I]").
+  case "$out" in *' I'*) ;; *) vim_lost=1 ;; esac
+done
+assert "config group: vim mode outlives output style when shedding" "$vim_lost"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2

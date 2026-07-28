@@ -707,26 +707,22 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
     need=$want_b
     [ "$show_wt" -eq 1 ] && need=$((need + 1 + want_w))
 
+    # The suffix is shown only when it costs the branch NOTHING — i.e. both names
+    # fit at the lengths they want. That is not a stylistic choice, it is the only
+    # rule that keeps the branch monotonic in pane width: showing "/wt" costs
+    # 1+len(wt) columns, so any width at which the suffix starts appearing would
+    # otherwise SHORTEN the branch by that much versus one column narrower. (An
+    # earlier version squeezed both and pinned the branch at its floor to keep the
+    # suffix, which is exactly how widening a pane could shorten the branch.)
+    # Below that, the suffix is dropped and the whole budget goes to the branch —
+    # one readable branch beats two mangled names, and it is the branch the
+    # counters qualify.
     if [ "$need" -le "$avail" ]; then
       b_max=$want_b w_max=$want_w
-    elif [ "$show_wt" -eq 1 ]; then
-      # Branch yields first, keeping the worktree at the length it actually needs.
-      b_max=$((avail - 1 - want_w))
-      if [ "$b_max" -ge 5 ]; then
-        w_max=$want_w
-      else
-        # Floored branch + this worktree still won't fit: shrink the worktree,
-        # then drop the suffix outright if even that fails.
-        w_max=$((avail - 6)) # avail - "/" - the branch's 5-col floor
-        if [ "$w_max" -ge 5 ]; then
-          b_max=5
-        else
-          show_wt=0
-          b_max=$avail
-        fi
-      fi
     else
-      b_max=$avail
+      show_wt=0
+      b_max=$want_b
+      [ "$b_max" -gt "$avail" ] && b_max=$avail
     fi
     [ "$b_max" -lt 5 ] && b_max=5
   fi
@@ -839,13 +835,23 @@ esac
 # context_window_size must not surface a bare [1M] on its own (it didn't before
 # these merged into one group). The vim chip is ungated — it rendered on its own
 # when vim mode was on and no model was reported, and still does.
+#
+# Order is shed order here too (gflush drops from the tail), so vim goes BEFORE
+# the output style: the mode is live state that changes as you type and decides
+# what your next keystroke does, while a style is set once and stays put. Ordered
+# the other way, a 1-char chip was dropped behind a long style name with columns
+# to spare.
+show_model=0
 if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
+  show_model=1
+fi
+if [ "$show_model" -eq 1 ]; then
   gadd "${CYAN}${model_short}${RST}" "$model_short"
   gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
-  gadd "${MAGENTA}${output_style}${RST}" "$output_style"
 fi
 gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
+[ "$show_model" -eq 1 ] && gadd "${MAGENTA}${output_style}${RST}" "$output_style"
 gflush
 
 # Pack the groups onto lines: the title starts line 1; each group joins the
