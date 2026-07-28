@@ -148,13 +148,24 @@ assert "exit 0 when 7d shown" "$?"
 # 'f' of its own ("N left"), so a whole-line grep reports a false leak. The bar
 # is whitespace-delimited field 2 on every bar line, and contains no spaces.
 bar_of() { printf '%s\n' "$1" | awk -v l="$2" '$1 == l { print $2 }'; }
+
+# An ABSENCE check must not pass vacuously: `case "" in *f*)` falls through to
+# "no f", so a bar_of that extracts nothing (label rename, an extra leading
+# field) would silently disable these checks and read as "no leak". Require a
+# bar-shaped field first — every bar has track or fill pips — so a broken
+# extraction fails loudly instead of going quietly green.
+fable_absent() {
+  case "$1" in *[-#]*) ;; *) return 1 ;; esac # nothing bar-shaped extracted
+  case "$1" in *f*) return 1 ;; esac
+  return 0
+}
 sb_out=$(run_sl 120 "$P_SEVEN_BINDING" | strip_ansi)
 case "$(bar_of "$sb_out" 7d)" in *f*) c=0 ;; *) c=1 ;; esac
 assert "fable: landmark present on the 7d bar" "$c"
-case "$(bar_of "$sb_out" 5h)" in *f*) c=1 ;; *) c=0 ;; esac
-assert "fable: landmark absent from the 5h bar" "$c"
-case "$(bar_of "$sb_out" CTX)" in *f*) c=1 ;; *) c=0 ;; esac
-assert "fable: landmark absent from the CTX bar" "$c"
+fable_absent "$(bar_of "$sb_out" 5h)"
+assert "fable: landmark absent from the 5h bar" "$?"
+fable_absent "$(bar_of "$sb_out" CTX)"
+assert "fable: landmark absent from the CTX bar" "$?"
 # ...and it's actually colored (a stripped snapshot can't tell FABLE="" apart).
 case "$(run_sl 120 "$P_SEVEN_BINDING")" in *"${esc}[38;2;214;122;255m"*) c=0 ;; *) c=1 ;; esac
 assert "fable: landmark carries its own color" "$c"
@@ -168,8 +179,8 @@ assert "fable: landmark carries its own color" "$c"
 HALF_7D=$(($(date +%s) + 5040 * 60))
 P_CLOCK_COLLIDE='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":60,"resets_at":'"$HALF_7D"'}}}'
 collide_bar=$(bar_of "$(run_sl 120 "$P_CLOCK_COLLIDE" | strip_ansi)" 7d)
-case "$collide_bar" in *f*) c=1 ;; *) c=0 ;; esac
-assert "fable: yields its cell to the clock pip" "$c"
+fable_absent "$collide_bar"
+assert "fable: yields its cell to the clock pip" "$?"
 case "$collide_bar" in *'|'*) c=0 ;; *) c=1 ;; esac
 assert "fable: ...and the clock pip renders there instead" "$c"
 
