@@ -12,7 +12,8 @@ CTX ####--------------------|-----  13% 128k/1M cache 78% 67%->AC
 5h  |###########------------------  40% 3h 12m left [+8%] 7d 22%
 ```
 
-Pure ASCII (`#` fill, `-` track, `|` clock/threshold, `*` burn projection) — no Nerd Font
+Pure ASCII (`#` fill, `-` track, `|` clock/threshold, `*` burn projection, `f` Fable
+weekly cap) — no Nerd Font
 required. Bars size themselves to the terminal via the `COLUMNS` env var, holding back a
 small margin so they never overrun Claude's own chrome. The layout stays compact: **2–4
 lines** — identity and config share one row of colored `[]` groups, and the 7-day window
@@ -30,7 +31,9 @@ shows only when it's the binding one.
   (No PR cell — Claude Code already surfaces the current PR.)
 - **Line 2** — context window with a blackbody-gradient bar; an amber cell marks the autocompact threshold. The `%` escalates green→amber→red as it approaches; below the threshold a `N%->AC` badge shows live headroom, and once crossed a `[AC]` chip (plus `[200k+]` past 200k tokens). Trailing `Nk/Nk` is tokens-in-context / window size, and `cache N%` is the share served from the prompt cache.
 - **Line 3** — the 5-hour rate-limit window. The blue pip is the wall-clock position in the window; the yellow pip projects end-of-window usage at the current burn rate; `time left` counts down to the reset; `[+N%]` is usage-vs-clock delta. When the 7-day window isn't binding it rides here as a compact `7d N%` badge.
-- **Line 4** — the 7-day window, shown as its own bar only when it's ≥50% or busier than the 5-hour window.
+- **Line 4** — the 7-day window, shown as its own bar only when it's ≥50% or busier than the 5-hour window. A magenta `f` at the 50% cell marks the [Fable 5 weekly cap](https://support.claude.com/en/articles/15424964-claude-fable-5-on-your-plan): on Max and Team Premium, Fable is included up to 50% of the weekly limit, and past that it draws pay-as-you-go extra-usage credits at API rates.
+
+  It's a **landmark, not a cutover.** The bar tracks *all-model* usage while the cap applies only to *Fable* usage, so the cell means "if this week were all Fable, credits start here" — cross it on Sonnet and you owe nothing. 50% is a fixed constant because the payload carries no per-model breakdown. Dynamic cells win the cell they share: clock pip > burn projection > `f`.
 
 Repo and branch cells are OSC8 hyperlinks — ⌘-click them in a supporting terminal.
 
