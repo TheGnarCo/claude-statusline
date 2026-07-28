@@ -54,10 +54,12 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 # ── Style primitives ──────────────────────────────────────────────────────
 if [ "$USE_COLOR" -eq 0 ]; then
   UNDIM="" BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
-  NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT=""
+  NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT="" UL="" UL_OFF=""
 else
   UNDIM="${ESC}[22m"
   BOLD="${ESC}[1m"
+  UL="${ESC}[4m"
+  UL_OFF="${ESC}[24m"
   RST="${ESC}[0m"
   MUTED="${ESC}[90m"
   RED="${ESC}[31m"
@@ -151,7 +153,14 @@ trunc_mid() {
 }
 
 # Build an OSC8 hyperlink: osc8 <url> <text>
-osc8() { printf '%s]8;;%s%s%s%s]8;;%s' "$ESC" "$1" "$BEL" "$2" "$ESC" "$BEL"; }
+#
+# The text is underlined (SGR 4, closed with 24 rather than a full reset so the
+# caller's color survives). The OSC 8 escape is zero-width, so without it a
+# clickable cell is visually identical to every other cell on the row and nothing
+# tells you it can be ⌘-clicked; the underline is the one link affordance every
+# terminal renders, and it costs no columns. Callers must not put a full reset
+# (RST) mid-text — it would clear the underline before the link ends.
+osc8() { printf '%s]8;;%s%s%s%s%s%s]8;;%s' "$ESC" "$1" "$BEL" "$UL" "$2" "$UL_OFF" "$ESC" "$BEL"; }
 
 # ── cmux compatibility shim ─────────────────────────────────────────────────
 # The bars and sigils above are already pure ASCII, so the only thing that still
@@ -161,6 +170,8 @@ osc8() { printf '%s]8;;%s%s%s%s]8;;%s' "$ESC" "$1" "$BEL" "$2" "$ESC" "$BEL"; }
 # and desyncing the scroll region. Detect cmux via its launch env (CMUX_SURFACE_ID
 # = the render surface, always set; CMUX_BUNDLE_ID as backstop) and emit link
 # text without the escape. Real Ghostty.app sets neither, so links stay clickable.
+# The underline goes with it: under cmux there is no link to advertise, and an
+# underlined cell that does nothing when clicked is worse than a plain one.
 if [ -n "${CMUX_SURFACE_ID:-}${CMUX_BUNDLE_ID:-}" ]; then
   osc8() { printf '%s' "$2"; }
 fi
@@ -394,6 +405,15 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     cols) cols=$_v ;;
   esac
 done <<< "$fields"
+
+# Output style: drop the built-in one. Claude Code reports the default style by
+# name ("claude"; older builds "default"), so the cell rendered on every session
+# that had never touched /output-style — a permanent magenta word that told you
+# nothing. It only earns a column when a NON-default style is active, which is
+# exactly when "why is Claude answering like this?" is a question worth an answer.
+case "$(printf '%s' "$output_style" | tr '[:upper:]' '[:lower:]')" in
+  claude | default) output_style="" ;;
+esac
 
 # Normalize numeric-ish fields.
 duration_ms=$(int_prefix "$duration_ms")
@@ -651,8 +671,10 @@ fi
 # The owner renders muted so the repo name stays the row's visual anchor and the
 # extra columns don't shout. Once the slug has been ellipsized that split no longer
 # holds (the ".." can land anywhere in it), so a truncated title renders as one run.
+# No reset between the two runs: NEAR_WHITE already overrides MUTED, and a full
+# reset there would close the link underline halfway through the slug.
 if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
-  title_disp="${MUTED}${repo_slug%/*}/${RST}${BOLD}${NEAR_WHITE}${repo_slug##*/}${RST}"
+  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${NEAR_WHITE}${repo_slug##*/}${RST}"
 else
   title_disp="${BOLD}${NEAR_WHITE}${title_txt}${RST}"
 fi

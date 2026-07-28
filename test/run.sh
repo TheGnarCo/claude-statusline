@@ -756,6 +756,63 @@ out=$(run_sl 27 "$P_COST_EXACT" | strip_ansi | line1_block)
 case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
 assert "session group: an exactly-fitting cost keeps its burn rate" "$c"
 
+# ── Output style: the built-in style is not a cell ───────────────────────────
+# Claude Code names the default style in the payload ("claude"; older builds
+# "default"), so rendering it verbatim pinned a magenta word onto every session
+# that had never set a style. Non-git dir on purpose: this repo's own name would
+# otherwise satisfy the *claude* match from the title alone.
+cd "$NONGIT" || exit 2
+P_STYLE_BASE='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}'
+out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"claude"}}' | strip_ansi | line1_block)
+case "$out" in *claude*) c=1 ;; *) c=0 ;; esac
+assert "config group: the default output style renders no cell" "$c"
+case "$out" in *'Opus 4.8'*) c=0 ;; *) c=1 ;; esac
+assert "config group: suppressing the default keeps the rest of the group" "$c"
+
+out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"Default"}}' | strip_ansi | line1_block)
+case "$out" in *[Dd]efault*) c=1 ;; *) c=0 ;; esac
+assert "config group: the default style is matched case-insensitively" "$c"
+
+out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"Explanatory"}}' | strip_ansi | line1_block)
+case "$out" in *Explanatory*) c=0 ;; *) c=1 ;; esac
+assert "config group: a non-default output style still renders" "$c"
+
+# A default style must not leave an empty bracket behind when it was the group's
+# only member (no model, no effort, no vim mode).
+out=$(run_sl 100 '{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"output_style":{"name":"claude"}}' | strip_ansi | line1_block)
+case "$out" in *'[]'*) c=1 ;; *) c=0 ;; esac
+assert "config group: a lone default style leaves no empty bracket" "$c"
+
+# ── Links are underlined ─────────────────────────────────────────────────────
+# The OSC 8 escape is zero-width, so an underline is the only thing that tells a
+# reader which cells are clickable. Asserted structurally — every link OPEN (a
+# non-empty URL payload) must be followed immediately by SGR 4 — so a future link
+# that forgets the affordance fails here rather than shipping silently.
+cd "$GITREPO" || exit 2
+git remote add origin https://github.com/TheGnarCo/claude-statusline.git 2> /dev/null
+bel=$(printf '\007')
+raw_links=$(run_sl 100 "$P_DIRTY")
+opens=$(printf '%s' "$raw_links" | grep -c "${esc}]8;;[^${bel}]\{1,\}${bel}")
+[ "$opens" -gt 0 ] && c=0 || c=1
+assert "links: a repo with a remote emits OSC8 hyperlinks" "$c"
+n_open=$(printf '%s' "$raw_links" | grep -o "${esc}]8;;[^${bel}]\{1,\}${bel}" | wc -l | tr -d ' ')
+n_ul=$(printf '%s' "$raw_links" | grep -o "${esc}]8;;[^${bel}]\{1,\}${bel}${esc}\[4m" | wc -l | tr -d ' ')
+[ "$n_ul" = "$n_open" ] && [ "$n_ul" != "0" ] && c=0 || c=1
+assert "links: every hyperlink opens with an underline (SGR 4)" "$c"
+# Closed with SGR 24, not a full reset: the caller's color must survive the link.
+case "$raw_links" in *"${esc}[24m"*) c=0 ;; *) c=1 ;; esac
+assert "links: the underline is closed with SGR 24" "$c"
+
+# Under cmux there is no link, so there must be no underline promising one.
+out_cmux=$(COLUMNS=100 HOME=/home/tester COLORTERM=truecolor CMUX_SURFACE_ID=1 \
+  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_DIRTY")
+case "$out_cmux" in *"${esc}]8;;"* | *"${esc}[4m"*) c=1 ;; *) c=0 ;; esac
+assert "links: cmux gets neither the OSC8 escape nor the underline" "$c"
+# ...and the link text itself is still there, just not clickable.
+case "$(printf '%s' "$out_cmux" | strip_ansi)" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
+assert "links: cmux keeps the link text" "$c"
+git remote remove origin 2> /dev/null
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

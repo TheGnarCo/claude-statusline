@@ -21,7 +21,7 @@ shows only when it's the binding one.
 - **Line 1** — the repo as **`owner/name`** (linked to GitHub; the owner is muted so the repo name stays the anchor), or the cwd's last two components outside a repo — then **one `[]` per concept**: a bracket is a group of related cells, not a single field, so the eye stops four times instead of eight. Groups pack left-to-right and wrap to a continuation line only when they won't fit the pane. Members are space-separated, each keeping its own color, and any member with nothing to say drops out (an all-empty group renders no bracket at all):
   - **`[@branch/worktree counters]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `x`conflict `^`ahead `v`behind `!`modified `+`staged `?`untracked `*`stash — e.g. `[@main/wt ^2 !2 +3]`. Ordered most-urgent-first, which is also the order a too-narrow pane gives them up in (from the tail): a conflict or unpushed commits are what you cannot afford to miss, a stash count is what you can. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget.
   - **`[name +added/-removed $cost ($/h)]`** — **this session**. The name orients you among many concurrent tabs: `agent.name` (a spawned/`--agent` context, magenta) wins over your `session_name` (cyan) when both are set. Then this session's churn, and its cost + per-hour burn.
-  - **`[model 1M effort vim style]`** — **this config**. Model, context-window flag (`1M` for the extended window), reasoning effort (`XHi`/`Max` for the high tiers), vim mode (`N`/`I`/`V`/`V-L`, colored by mode, shown only when vim mode is on), and output style. Vim sits ahead of the style for the same reason the counters are ordered: display order is shed order, and the mode is live state that decides what your next keystroke does, while a style is set once.
+  - **`[model 1M effort vim style]`** — **this config**. Model, context-window flag (`1M` for the extended window), reasoning effort (`XHi`/`Max` for the high tiers), vim mode (`N`/`I`/`V`/`V-L`, colored by mode, shown only when vim mode is on), and output style — the style cell appears only when a **non-default** one is set (Claude Code names the built-in style `claude`, which said nothing and sat on every row). Vim sits ahead of the style for the same reason the counters are ordered: display order is shed order, and the mode is live state that decides what your next keystroke does, while a style is set once.
   - **`[telem tag]` / `[no telem tag]`** — **telemetry coverage**. Whether this repo's Claude Code usage is attributed to a project in [telem.thegnar.info](https://telem.thegnar.info) (a `project.name` OTEL attribute). Green when it is; yellow when it isn't and the usage lands there under *(untagged)* — run `/toolkit:project-telem-tag` in the repo to fix that. Both states link to the dashboard. Only rendered inside a git repo, and it sits last so it's the first group to spill onto a continuation line on a narrow pane.
 
   (No PR cell — Claude Code already surfaces the current PR.)
@@ -29,7 +29,11 @@ shows only when it's the binding one.
 - **Line 3** — the 5-hour rate-limit window. The blue pip is the wall-clock position in the window; the yellow pip projects end-of-window usage at the current burn rate; `time left` counts down to the reset; `[+N%]` is usage-vs-clock delta. When the 7-day window isn't binding it rides here as a compact `7d N%` badge.
 - **Line 4** — the 7-day window, shown as its own bar only when it's ≥50% or busier than the 5-hour window.
 
-Repo and branch cells are OSC8 hyperlinks — ⌘-click them in a supporting terminal.
+Every linked cell — repo, branch, telemetry chip — is an OSC8 hyperlink and renders
+**underlined**, so you can tell what's clickable before you try it; ⌘-click them in a
+supporting terminal. Under cmux the escape is dropped (it miscounts the
+zero-width payload), and the underline goes with it — the text
+stays, the promise of a link doesn't.
 
 Colors honor [`NO_COLOR`](https://no-color.org) and degrade to a 256-color ramp on
 terminals without truecolor (`COLORTERM`); the ASCII pip shapes keep the bars legible even
