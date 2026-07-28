@@ -7,7 +7,7 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
 # Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff style vim]
+#   Line 1: repo/dir [@branch(/wt) counters][name +N/-M $cost][model ctx eff vim style]
 #           — identity + config folded onto one row of colored [] groups, ONE
 #           GROUP PER CONCEPT: git state, then this session, then this config.
 #           Groups pack left-to-right and wrap to a continuation line only when
@@ -518,6 +518,16 @@ if [ -n "$cols" ]; then
   [ "$branch_max" -lt 14 ] && branch_max=14
   wt_max=$((cols / 5))
   [ "$wt_max" -lt 8 ] && wt_max=8
+  # The 14-col floor above can exceed the row itself on a very narrow pane, and
+  # branch_max is the cap on every group's FIRST member — the one gflush can never
+  # shed. Unclamped, a group could overrun the row on its first member alone
+  # (a session name rendered 19 cols into a 14-col budget at COLUMNS=22). Hold
+  # back 5: 2 for the brackets and 3 for the " .." a shed group appends. Only
+  # binds below ~COLUMNS 27, where cols/3 is under the floor anyway.
+  if [ $((cols - 5)) -lt "$branch_max" ]; then
+    branch_max=$((cols - 5))
+    [ "$branch_max" -lt 5 ] && branch_max=5
+  fi
 else
   branch_max=40
   wt_max=24
@@ -576,9 +586,10 @@ gadd() {
 # but grouping sums them (a long session name + big churn + a big cost now share
 # a bracket), so the ceiling has to be enforced here: an over-wide group sheds
 # its lowest-priority members and marks the elision with '..'. The first member
-# is always kept, and each group's first member is separately budget-capped
-# (branch_max / wt_max for git, branch_max for the session name and the model),
-# so what survives always fits.
+# is always kept, so it carries its own cap: branch_max/wt_max clamped to `avail`
+# for git, branch_max for the session name and the model — and branch_max is
+# itself clamped to cols-5 (see its floor), without which a group could overrun
+# the row on its unsheddable first member alone.
 gflush() {
   local n=${#_gm_plain[@]}
   [ "$n" -eq 0 ] && return
@@ -781,7 +792,7 @@ gadd "${GREEN}${money}${RST}" "$money"
 gflush
 
 # ── Group 3: this config ────────────────────────────────────────────────────
-# [<model> <ctxflag> <effort> <style> <vim>] — every knob that decides how this
+# [<model> <ctxflag> <effort> <vim> <style>] — every knob that decides how this
 # session behaves, in one cell: model (cyan), extended-context flag (yellow),
 # reasoning effort (green), output style (magenta), vim mode (mode-colored). The
 # vim chip lived in its own bracket, but it is a config knob like the rest.

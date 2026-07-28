@@ -227,9 +227,14 @@ line1_block() { awk '/^CTX /{exit} {print}'; }
 # just "@branch", and the widest form — "@branch/worktree", which gflush can never
 # shed because it is the first member — would go unmeasured.
 P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name-here"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
+#
+# The narrow end (24, 26) is load-bearing: branch_max's 14-col floor can exceed
+# the row itself there, and it caps every group's FIRST member — the one gflush
+# can never shed — so an unclamped floor overran the row on that member alone
+# (19 cols into a 14-col budget at COLUMNS=22). Sweeping only 60+ missed it.
 l1_budget_overflow=0
 for pw in "$P_DIRTY" "$P_L1_MAX"; do
-  for w in 60 80 100 120 160 200; do
+  for w in 24 26 30 40 60 80 100 120 160 200; do
     max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
     [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
   done
@@ -435,14 +440,23 @@ cd "$COUNTERS" || exit 2
 # The vim chip is live state and must outlive a long output-style name when the
 # config group has to shed (display order is shed order, so it is ordered ahead).
 P_VIM_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"vim":{"mode":"INSERT"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Claude Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"}}'
-vim_lost=0
-for w in 44 48 52 56 60; do
+# The guard must key on the CONFIG group's own elision, not on '..' anywhere in
+# the block: trunc_mid's ellipsis sits inside a truncated name and this fixture's
+# branch is always truncated, so a bare *'..'* matched every width and filtered
+# nothing. The shed marker is distinguishable — always a standalone " .." member
+# at the end of its bracket — so isolate the config bracket (the one carrying the
+# model name) and test that.
+vim_lost=0 vim_shed_seen=0
+for w in 40 44 48 52 56 60; do
   out=$(run_sl "$w" "$P_VIM_SHED" | strip_ansi | line1_block)
-  case "$out" in *'..'*) ;; *) continue ;; esac # only widths where it sheds
-  # " I" covers the chip both mid-group (" I ") and last (" I]").
-  case "$out" in *' I'*) ;; *) vim_lost=1 ;; esac
+  cfg=$(printf '%s\n' "$out" | tr ']' '\n' | grep 'Claude' | tail -1)
+  case "$cfg" in *' ..') ;; *) continue ;; esac # only widths where CONFIG sheds
+  vim_shed_seen=1
+  # " I" covers the chip both mid-group (" I ") and before the marker (" I ..").
+  case "$cfg" in *' I'*) ;; *) vim_lost=1 ;; esac
 done
 assert "config group: vim mode outlives output style when shedding" "$vim_lost"
+assert "config group: a real config-group shed was exercised" "$((1 - vim_shed_seen))"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 cd "$ROOT" || exit 2
