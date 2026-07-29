@@ -7,8 +7,8 @@
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
 # Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: owner/repo [@branch(/wt) counters][name +N/-M $cost]
-#           [model ctx eff vim style][telem tag]
+#   Line 1: owner/repo [@branch(/wt) counters +N/-M]
+#           [name model ctx eff style $cost][telem tag]
 #           — identity + config folded onto one row of colored [] groups, ONE
 #           GROUP PER CONCEPT: git state, then this session, then this config,
 #           then whether this repo's usage is attributed in telemetry.
@@ -55,6 +55,7 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 if [ "$USE_COLOR" -eq 0 ]; then
   UNDIM="" BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
   NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT="" UL="" UL_OFF=""
+  TELEM_ON="" TELEM_OFF=""
 else
   UNDIM="${ESC}[22m"
   BOLD="${ESC}[1m"
@@ -73,12 +74,16 @@ else
     MARKER="${ESC}[38;2;96;200;255m"     # rate-window clock pip (blue)
     PROJ="${ESC}[38;2;255;210;80m"       # burn projection pip (yellow)
     AUTOCOMPACT="${ESC}[38;2;255;128;0m" # autocompact threshold cell (amber)
+    TELEM_ON="${ESC}[38;2;181;110;58m"   # telem chip, covered   (dim burnt orange)
+    TELEM_OFF="${ESC}[38;2;255;160;60m"  # telem chip, untagged  (bright orange)
   else
     # 256-color approximations for terminals without truecolor.
     NEAR_WHITE="${ESC}[38;5;255m"
     MARKER="${ESC}[38;5;39m"
     PROJ="${ESC}[38;5;221m"
     AUTOCOMPACT="${ESC}[38;5;208m"
+    TELEM_ON="${ESC}[38;5;130m"
+    TELEM_OFF="${ESC}[38;5;214m"
   fi
 fi
 
@@ -350,7 +355,6 @@ fields=$(printf '%s' "$input" | jq -r '
   "output_style=\(.output_style.name // "")",
   "session_name=\(.session_name // "")",
   "agent_name=\(.agent.name // "")",
-  "vim_mode=\(.vim.mode // "")",
   "cost_usd=\(.cost.total_cost_usd // "" | tostring)",
   "duration_ms=\(.cost.total_duration_ms // 0 | tostring)",
   "lines_added=\(.cost.total_lines_added // 0 | tostring)",
@@ -367,7 +371,7 @@ used_pct="" ctx_input_tokens=0 ctx_window_size=0 cache_read_tokens=0
 worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
-session_name="" agent_name="" vim_mode=""
+session_name="" agent_name=""
 lines_added=0
 lines_removed=0 exceeds_200k="" five_pct=""
 five_resets_at="" seven_pct="" seven_resets_at="" cols=""
@@ -392,7 +396,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     output_style) output_style=$_v ;;
     session_name) session_name=$_v ;;
     agent_name) agent_name=$_v ;;
-    vim_mode) vim_mode=$_v ;;
     cost_usd) cost_usd=$_v ;;
     duration_ms) duration_ms=$_v ;;
     lines_added) lines_added=$_v ;;
@@ -660,8 +663,8 @@ fi
 # ── Line 1 (identity + config, packed onto one row; wraps when it won't fit) ─
 # Everything Claude Code reports about "where am I / how am I configured" folds
 # onto a single row of colored [] groups. A group is a CONCEPT, not a field: one
-# bracket for git state (branch/worktree + counters), one for this session (name,
-# churn, cost), one for this config (model, ctx flag, effort, style, vim mode), and
+# bracket for git state (branch/worktree, counters, this session's churn), one for
+# this session's config (name, model, ctx flag, effort, output style, cost), and
 # one for telemetry coverage. The groups pack left-to-right and spill to a
 # continuation line only when they exceed the pane, so the common case is one row (a
 # row saved vs. the old title+model split), and related cells read as one cell
@@ -914,16 +917,39 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
 fi
 
 for ((ci = 0; ci < nct; ci++)); do gadd "${_ct_disp[ci]}" "${_ct_plain[ci]}"; done
+# Session churn joins the git cell: +N/-M is what this session did to this
+# working tree, so it reads with the tree's own state rather than as its own
+# bracket. Last in the group, hence first to shed — the counters describe what is
+# there now, the churn describes how it got there.
+#
+# Digits are the one member that must not be ellipsized ("+12..56" reads as a real
+# number), so an over-wide churn abbreviates the way token counts already do:
+# +123456/-654321 -> +123k/-654k. It can also LEAD the group (churn reported
+# outside a repo), and gflush never sheds a first member, so it must fit alone.
+if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
+  ch_add=$lines_added ch_del=$lines_removed
+  if [ -n "$cols" ] && [ $((${#ch_add} + ${#ch_del} + 3)) -gt $((cols - 5)) ]; then
+    ch_add=$(abbrev_num "$lines_added")
+    ch_del=$(abbrev_num "$lines_removed")
+  fi
+  gadd "${GREEN}${BOLD}+${ch_add}${RST}${MUTED}/${RED}${BOLD}-${ch_del}${RST}" \
+    "+${ch_add}/-${ch_del}"
+fi
+
 gflush
 
-# ── Group 2: this session ───────────────────────────────────────────────────
-# [<name> +N/-M $cost ($/h)] — who this session is and what it has spent, from
-# the fields Claude Code reports per session. The name is the "which of my many
-# concurrent tabs is this?" orientation cell: agent.name (a spawned/--agent
-# context, magenta) wins over the user's session_name (cyan) when both are set,
-# truncated to the branch budget so a long name can't blow the row. Churn and
-# cost are the same session's totals, so they share the cell rather than trailing
-# it as separate brackets.
+# ── Group 2: this session's config ──────────────────────────────────────────
+# [<name> <model> <ctxflag> <effort> <style> <$cost>] — WHO this session is and
+# every knob that decides how it behaves, in one cell: name (magenta for an agent,
+# cyan for a named session), model (cyan), extended-context flag (yellow),
+# reasoning effort (green), output style (magenta), spend (green).
+#
+# The name leads because it answers "which of my many concurrent tabs is this?"
+# before anything about the model matters, and it only appears when it is worth a
+# column — a deliberately-named agent or session, never the generic "claude" that
+# every untyped agent reports. The cost trails: it is the group's one derived
+# number, the only member that keeps changing on its own, and the one you can
+# reconstruct after the fact from the transcript.
 name_txt="" name_col=""
 if [ -n "$agent_name" ]; then
   name_txt=$agent_name name_col=$MAGENTA
@@ -935,66 +961,9 @@ if [ -n "$name_txt" ]; then
   gadd "${name_col}${BOLD}${nt}${RST}" "$nt"
 fi
 
-if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
-  # Churn can lead this group too (no name is the default), and a first member is
-  # never shed — so it has to fit the row on its own. Digits are the one member
-  # that must not be ellipsized: "+12..56" reads as a real number. Abbreviate
-  # instead, the same way token counts already are, which stays honest about
-  # magnitude: +123456/-654321 -> +123k/-654k.
-  ch_add=$lines_added ch_del=$lines_removed
-  if [ -n "$cols" ] && [ $((${#ch_add} + ${#ch_del} + 3)) -gt $((cols - 5)) ]; then
-    ch_add=$(abbrev_num "$lines_added")
-    ch_del=$(abbrev_num "$lines_removed")
-  fi
-  gadd "${GREEN}${BOLD}+${ch_add}${RST}${MUTED}/${RED}${BOLD}-${ch_del}${RST}" \
-    "+${ch_add}/-${ch_del}"
-fi
-
-# Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
-money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
-  if (c ~ /^[0-9]+(\.[0-9]+)?$/) {
-    printf "$%.2f", c
-    if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
-  }
-}')
-# The cost cell can be the group's FIRST member when no session/agent name is set
-# (the default), and gflush never sheds a first member — so it has to fit on its
-# own. Drop the derived per-hour burn before the total, which is the half you
-# cannot reconstruct from the other.
-# Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
-# it here dropped the burn rate at COLUMNS=60, where it fits fine.
-#
-# Measured against what the group ALREADY holds, not against the money cell alone.
-# Alone-only meant that in the ordinary name+churn+cost group the full string still
-# "fit the row" on its own, so nothing shortened — and gflush then shed the entire
-# cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
-# row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
-if [ -n "$cols" ] && [ -n "$money" ]; then
-  _mu=0
-  for ((_mi = 0; _mi < ${#_gm_plain[@]}; _mi++)); do
-    [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
-    _mu=$((_mu + ${#_gm_plain[_mi]}))
-  done
-  # 2 brackets + what's there + a separator ONLY if something is there + the cell.
-  # Counting the separator unconditionally stripped the burn rate from a cost-only
-  # group that fit exactly (19 cols into 19 at COLUMNS=27) — the very case this
-  # check was written for.
-  _msep=0
-  [ "${#_gm_plain[@]}" -gt 0 ] && _msep=1
-  if [ $((2 + _mu + _msep + ${#money})) -gt "$cols" ]; then
-    money=${money%% (*}
-  fi
-fi
-gadd "${GREEN}${money}${RST}" "$money"
-gflush
-
-# ── Group 3: this config ────────────────────────────────────────────────────
-# [<model> <ctxflag> <effort> <vim> <style>] — every knob that decides how this
-# session behaves, in one cell: model (cyan), extended-context flag (yellow),
-# reasoning effort (green), vim mode (mode-colored), output style (magenta). The
-# vim chip lived in its own bracket, but it is a config knob like the rest.
-# Short name: drop the " (...)" suffix. Capped to the branch budget because it is
-# this group's first member, and gflush can never shed the first member.
+# Short name: drop the " (...)" suffix. Capped to the branch budget because it
+# leads the group whenever no session/agent name does, and gflush can never shed
+# a first member.
 model_short="${model_name%% (*}"
 model_short=$(trunc_mid "$model_short" "$branch_max")
 
@@ -1026,29 +995,13 @@ case "$effort_level" in
   *) effort_cap="$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')${effort_level:1}" ;;
 esac
 
-# Vim mode: N/I/V/V-L colored by mode (the vim-statusline idiom).
-vm="" vm_col=""
-case "$vim_mode" in
-  "") ;;
-  NORMAL) vm=N vm_col=$BLUE ;;
-  INSERT) vm=I vm_col=$GREEN ;;
-  VISUAL) vm=V vm_col=$MAGENTA ;;
-  "VISUAL LINE") vm=V-L vm_col=$MAGENTA ;;
-  "VISUAL BLOCK") vm=V-B vm_col=$MAGENTA ;;
-  REPLACE) vm=R vm_col=$RED ;;
-  *) vm=${vim_mode:0:1} vm_col=$MUTED ;;
-esac
-
 # The model cells stay gated on the model fields: a payload that reports only a
 # context_window_size must not surface a bare [1M] on its own (it didn't before
-# these merged into one group). The vim chip is ungated — it rendered on its own
-# when vim mode was on and no model was reported, and still does.
+# these merged into one group).
 #
-# Order is shed order here too (gflush drops from the tail), so vim goes BEFORE
-# the output style: the mode is live state that changes as you type and decides
-# what your next keystroke does, while a style is set once and stays put. Ordered
-# the other way, a 1-char chip was dropped behind a long style name with columns
-# to spare.
+# Order is shed order here too (gflush drops from the tail), so the output style
+# goes last: it is set once and stays put, while everything ahead of it describes
+# what this session IS.
 show_model=0
 if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
   show_model=1
@@ -1058,22 +1011,62 @@ if [ "$show_model" -eq 1 ]; then
   gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
 fi
-gadd "${vm_col}${BOLD}${vm}${RST}" "$vm"
 # Capped ONLY when it actually leads the group — i.e. every cell ahead of it is
 # empty. Capping unconditionally ellipsized a long style name that fit with columns
 # to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
 # showed it whole); the first-member rule that justifies a cap simply did not apply.
 style_txt=$output_style
-if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ] && [ -z "$vm" ]; then
+if [ -z "$name_txt" ] && [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ]; then
   style_txt=$(trunc_mid "$output_style" "$branch_max")
 fi
 [ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
+
+# Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
+money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
+  if (c ~ /^[0-9]+(\.[0-9]+)?$/) {
+    printf "$%.2f", c
+    if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
+  }
+}')
+# The cost cell can still be the group's FIRST member (a payload with a cost and
+# no name, model, effort or style), and gflush never sheds a first member — so it
+# has to fit on its own. Drop the derived per-hour burn before the total, which is
+# the half you cannot reconstruct from the other.
+# Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
+# it here dropped the burn rate at COLUMNS=60, where it fits fine.
+#
+# Measured against what the group ALREADY holds, not against the money cell alone.
+# Alone-only meant that in the ordinary name+churn+cost group the full string still
+# "fit the row" on its own, so nothing shortened — and gflush then shed the entire
+# cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
+# row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
+if [ -n "$cols" ] && [ -n "$money" ]; then
+  _mu=0
+  for ((_mi = 0; _mi < ${#_gm_plain[@]}; _mi++)); do
+    [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
+    _mu=$((_mu + ${#_gm_plain[_mi]}))
+  done
+  # 2 brackets + what's there + a separator ONLY if something is there + the cell.
+  # Counting the separator unconditionally stripped the burn rate from a cost-only
+  # group that fit exactly (19 cols into 19 at COLUMNS=27) — the very case this
+  # check was written for.
+  _msep=0
+  [ "${#_gm_plain[@]}" -gt 0 ] && _msep=1
+  if [ $((2 + _mu + _msep + ${#money})) -gt "$cols" ]; then
+    money=${money%% (*}
+  fi
+fi
+gadd "${GREEN}${money}${RST}" "$money"
 gflush
 
-# ── Group 4: telemetry coverage ─────────────────────────────────────────────
-# [telem tag] green when this repo's Claude Code usage is attributed to a project in
-# the dashboard, [no telem tag] yellow when it isn't and the usage lands there under
-# "(untagged)" (fix: /toolkit:project-telem-tag). Both are OSC8 links to the
+# ── Group 3: telemetry coverage ─────────────────────────────────────────────
+# [telem tag] when this repo's Claude Code usage is attributed to a project in the
+# dashboard, [no telem tag] when it isn't and the usage lands there under
+# "(untagged)" (fix: /toolkit:project-telem-tag). Two shades of ONE hue rather than
+# green-vs-yellow: this is one axis with two positions, not two unrelated states, so
+# it reads as a single dial — dim burnt orange for covered, bright orange for the
+# state that wants doing something about. Nothing rests on telling the shades apart:
+# the two chips already differ by the word "no". Both are OSC8 links to the
 # dashboard itself, so the cell answers "am I covered?" and ⌘-click goes to where the
 # answer matters. Two states rather than nag-only: a chip that only ever appears as a
 # warning leaves you unable to tell "covered" from "this statusline is too old to
@@ -1087,8 +1080,8 @@ gflush
 # make room for a cell that rarely changes. Trailing, it's the first thing to spill.
 # CLAUDE_STATUSLINE_HIDE_TELEM=1 drops it entirely.
 case "$telem_state" in
-  tagged) gadd "${GREEN}$(osc8 "$TELEM_URL" 'telem tag')${RST}" 'telem tag' ;;
-  untagged) gadd "${YELLOW}$(osc8 "$TELEM_URL" 'no telem tag')${RST}" 'no telem tag' ;;
+  tagged) gadd "${TELEM_ON}$(osc8 "$TELEM_URL" 'telem tag')${RST}" 'telem tag' ;;
+  untagged) gadd "${TELEM_OFF}$(osc8 "$TELEM_URL" 'no telem tag')${RST}" 'no telem tag' ;;
 esac
 gflush
 
