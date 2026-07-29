@@ -353,8 +353,6 @@ fields=$(printf '%s' "$input" | jq -r '
   "model_name=\(.model.display_name // "")",
   "effort_level=\(.effort.level // "")",
   "output_style=\(.output_style.name // "")",
-  "session_name=\(.session_name // "")",
-  "agent_name=\(.agent.name // "")",
   "cost_usd=\(.cost.total_cost_usd // "" | tostring)",
   "duration_ms=\(.cost.total_duration_ms // 0 | tostring)",
   "lines_added=\(.cost.total_lines_added // 0 | tostring)",
@@ -371,7 +369,6 @@ used_pct="" ctx_input_tokens=0 ctx_window_size=0 cache_read_tokens=0
 worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
-session_name="" agent_name=""
 lines_added=0
 lines_removed=0 exceeds_200k="" five_pct=""
 five_resets_at="" seven_pct="" seven_resets_at="" cols=""
@@ -394,8 +391,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     model_name) model_name=$_v ;;
     effort_level) effort_level=$_v ;;
     output_style) output_style=$_v ;;
-    session_name) session_name=$_v ;;
-    agent_name) agent_name=$_v ;;
     cost_usd) cost_usd=$_v ;;
     duration_ms) duration_ms=$_v ;;
     lines_added) lines_added=$_v ;;
@@ -408,17 +403,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     cols) cols=$_v ;;
   esac
 done <<< "$fields"
-
-# Agent name: drop the generic one. A background/spawned agent defaults to the
-# catch-all type, which is literally named "claude" — the same non-answer the
-# built-in output style is, on every agent pane, and it can't distinguish two
-# concurrent agents from each other. A deliberately-named agent ("reviewer") still
-# earns the cell. Clearing it rather than special-casing the render also lets a
-# session_name fall back into the slot instead of being masked by a word that
-# says nothing.
-case "$(printf '%s' "$agent_name" | tr '[:upper:]' '[:lower:]')" in
-  claude) agent_name="" ;;
-esac
 
 # Output style: drop the built-in one. Claude Code reports the default style by
 # name ("claude"; older builds "default"), so the cell rendered on every session
@@ -964,31 +948,21 @@ fi
 gflush
 
 # ── Group 2: this session's config ──────────────────────────────────────────
-# [<name> <model> <ctxflag> <effort> <style> <$cost>] — WHO this session is and
-# every knob that decides how it behaves, in one cell: name (magenta for an agent,
-# cyan for a named session), model (cyan), extended-context flag (yellow),
+# [<model> <ctxflag> <effort> <style> <$cost>] — every knob that decides how this
+# session behaves, in one cell: model (cyan), extended-context flag (yellow),
 # reasoning effort (green), output style (magenta), spend (green).
 #
-# The name leads because it answers "which of my many concurrent tabs is this?"
-# before anything about the model matters, and it only appears when it is worth a
-# column — a deliberately-named agent or session, never the generic "claude" that
-# every untyped agent reports. The cost trails: it is the group's one derived
-# number, the only member that keeps changing on its own, and the one you can
-# reconstruct after the fact from the transcript.
-name_txt="" name_col=""
-if [ -n "$agent_name" ]; then
-  name_txt=$agent_name name_col=$MAGENTA
-elif [ -n "$session_name" ]; then
-  name_txt=$session_name name_col=$CYAN
-fi
-if [ -n "$name_txt" ]; then
-  nt=$(trunc_mid "$name_txt" "$branch_max")
-  gadd "${name_col}${BOLD}${nt}${RST}" "$nt"
-fi
-
+# There is no name cell. The group used to lead with one — the agent name, else
+# your session_name — on the theory that it answered "which of my many concurrent
+# tabs is this?" before anything about the model mattered. It didn't: every
+# untyped agent reports the generic "claude", which names nothing and can't tell
+# two agents apart, and the pane is already identified by the title's owner/repo
+# and the branch. The cost trails: it is the group's one derived number, the only
+# member that keeps changing on its own, and the one you can reconstruct after the
+# fact from the transcript.
+#
 # Short name: drop the " (...)" suffix. Capped to the branch budget because it
-# leads the group whenever no session/agent name does, and gflush can never shed
-# a first member.
+# leads the group, and gflush can never shed a first member.
 model_short="${model_name%% (*}"
 model_short=$(trunc_mid "$model_short" "$branch_max")
 
@@ -1047,7 +1021,7 @@ fi
 # to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
 # showed it whole); the first-member rule that justifies a cap simply did not apply.
 style_txt=$output_style
-if [ -z "$name_txt" ] && [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ]; then
+if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ]; then
   style_txt=$(trunc_mid "$output_style" "$branch_max")
 fi
 [ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
