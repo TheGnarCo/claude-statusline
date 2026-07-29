@@ -92,11 +92,11 @@ P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens"
 
 P_FRESH='{"workspace":{"current_dir":"/work/scratch/tmp"},"context_window":{"used_percentage":3,"total_input_tokens":8000,"context_window_size":200000},"model":{"display_name":"Haiku 4.5"}}'
 
-# Rich line-1: agent.name (wins over session_name), vim mode, and the xhigh effort
-# tier — exercises the fields folded onto line 1 by the compact layout, and locks
-# the concept grouping: agent name joins churn/cost in the session group, vim
-# NORMAL -> "N" joins the config group, effort xhigh -> "XHi" (not "Xhigh").
-P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"vim":{"mode":"NORMAL"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
+# Rich line-1: agent.name (wins over session_name) and the xhigh effort tier —
+# exercises the fields folded onto line 1 by the compact layout, and locks the
+# concept grouping: agent name joins churn/cost in the session group, effort
+# xhigh -> "XHi" (not "Xhigh") joins the config group.
+P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
 
 # ── Cases (non-git) ────────────────────────────────────────────────────────
 NONGIT=$(mktemp -d)
@@ -248,7 +248,7 @@ line1_block() { awk '/^CTX /{exit} {print}'; }
 # worktree.name is set deliberately: without it the git group's first member is
 # just "@branch", and the widest form — "@branch/worktree", which gflush can never
 # shed because it is the first member — would go unmeasured.
-P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name-here"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
+P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name-here"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
 #
 # The narrow end (24, 26) is load-bearing: branch_max's 14-col floor can exceed
 # the row itself there, and it caps every group's FIRST member — the one gflush
@@ -700,38 +700,40 @@ done
 assert "git group: branch length is monotonic in width" "$branch_shrank"
 cd "$COUNTERS" || exit 2
 
-# The vim chip is live state and must outlive a long output-style name when the
-# config group has to shed (display order is shed order, so it is ordered ahead).
-P_VIM_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"vim":{"mode":"INSERT"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Claude Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"}}'
+# Display order is shed order, so a cell ordered ahead of the output style must
+# outlive it when the config group has to shed. Effort is the last such cell now
+# that the vim chip is gone; the style is set once and is what you can afford to
+# lose first.
+P_CFG_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Claude Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"}}'
 # The guard must key on the CONFIG group's own elision, not on '..' anywhere in
 # the block: trunc_mid's ellipsis sits inside a truncated name and this fixture's
 # branch is always truncated, so a bare *'..'* matched every width and filtered
 # nothing. The shed marker is distinguishable — always a standalone " .." member
 # at the end of its bracket — so isolate the config bracket (the one carrying the
 # model name) and test that.
-vim_lost=0 vim_shed_seen=0
+cfg_lost=0 cfg_shed_seen=0
 for w in 40 44 48 52 56 60; do
-  out=$(run_sl "$w" "$P_VIM_SHED" | strip_ansi | line1_block)
+  out=$(run_sl "$w" "$P_CFG_SHED" | strip_ansi | line1_block)
   cfg=$(printf '%s\n' "$out" | tr ']' '\n' | grep 'Claude' | tail -1)
   case "$cfg" in *' ..') ;; *) continue ;; esac # only widths where CONFIG sheds
-  vim_shed_seen=1
-  # " I" covers the chip both mid-group (" I ") and before the marker (" I ..").
-  case "$cfg" in *' I'*) ;; *) vim_lost=1 ;; esac
+  cfg_shed_seen=1
+  case "$cfg" in *XHi*) ;; *) cfg_lost=1 ;; esac
 done
-assert "config group: vim mode outlives output style when shedding" "$vim_lost"
-assert "config group: a real config-group shed was exercised" "$((1 - vim_shed_seen))"
+assert "config group: effort outlives output style when shedding" "$cfg_lost"
+assert "config group: a real config-group shed was exercised" "$((1 - cfg_shed_seen))"
 
-# The session group must still be ABLE to mark an elision. The line1-shed golden
-# used to lock this, but now that the cost sheds its burn rate instead of the whole
-# cell, that snapshot legitimately shows no marker — so assert the marker directly
-# rather than lose the coverage.
-sess_marked=0
+# A group must still be ABLE to mark an elision. The line1-shed golden used to lock
+# this, but a shed there is width-dependent and the layout moved, so assert the
+# marker directly rather than lose the coverage. The git group is the one that
+# sheds for this fixture: six-figure churn sits at its tail, behind the branch and
+# the counters.
+git_marked=0
 for w in 24 26 30; do
-  sgroup=$(run_sl "$w" "$P_L1_CHURN_BIG" | strip_ansi | line1_block |
-    tr ']' '\n' | grep -E '^\[?\+' | tail -1)
-  case "$sgroup" in *' ..') sess_marked=1 ;; esac
+  ggroup=$(run_sl "$w" "$P_L1_CHURN_BIG" | strip_ansi | line1_block |
+    tr ']' '\n' | grep '@' | tail -1)
+  case "$ggroup" in *' ..') git_marked=1 ;; esac
 done
-assert "session group: an elision is marked, not silent" "$((1 - sess_marked))"
+assert "git group: an elision is marked, not silent" "$((1 - git_marked))"
 
 # A cap is only justified for a member that LEADS its group (gflush can never shed
 # a first member). Capping unconditionally is a regression against main: these two
@@ -804,7 +806,7 @@ case "$out" in *Explanatory*) c=0 ;; *) c=1 ;; esac
 assert "config group: a non-default output style still renders" "$c"
 
 # A default style must not leave an empty bracket behind when it was the group's
-# only member (no model, no effort, no vim mode).
+# only member (no model, no effort).
 out=$(run_sl 100 '{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"output_style":{"name":"claude"}}' | strip_ansi | line1_block)
 case "$out" in *'[]'*) c=1 ;; *) c=0 ;; esac
 assert "config group: a lone default style leaves no empty bracket" "$c"
