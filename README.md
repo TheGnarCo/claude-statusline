@@ -77,9 +77,8 @@ and run:
 /gnar-statusline
 ```
 
-The command fetches a pinned release of these scripts, backs up any existing statusline
-config, and wires `~/.claude/settings.json` for you. It also offers a **Customize** mode
-that walks the lines and installs a tailored copy.
+The command fetches the latest release of these scripts, backs up any existing statusline
+config, and wires `~/.claude/settings.json` for you.
 
 ### Manual
 

@@ -1,14 +1,14 @@
 # Changelog
 
 What each **tag** ships. Tags are the only thing that reaches anyone: `/gnar-statusline`
-installs a pinned tag and `install.sh` symlinks a clone, so a merge to `main` changes
-nothing for users until a tag is cut and the agent-skills pin moves.
+installs the latest **published release** and `install.sh` symlinks a clone, so a merge to
+`main` changes nothing for users — and publishing a release changes it for all of them, on
+their next install, with nothing to bump anywhere else.
 
 ## v1.1.1
 
 Two small line-1 corrections. No new dependencies; `subagent-statusline.sh` and
-`install.sh` are unchanged, and no line is added, removed, or reordered — so the
-`/gnar-statusline` Customize prose still describes this layout and only the pin has to move.
+`install.sh` are unchanged, and no line is added, removed, or reordered.
 
 ### Links are underlined
 
@@ -144,16 +144,27 @@ First tagged release: the two scripts extracted into their own repo, seeded from
 
 ## Cutting a release
 
-A tag is the delivery, so the notes above are reviewed *before* the tag exists rather than
-written after it is immutable.
+A release is the delivery, so the notes above are reviewed *before* the tag exists rather
+than written after it is immutable.
 
 1. Land everything intended for the release on `main`.
 2. Add its section here in a PR, and merge that PR — it is the last commit in the release.
-3. Cut an **annotated** tag at that commit (`v1.0.0` is annotated; keep them consistent)
-   and publish a GitHub release pointing at this file's section.
-4. Move `STATUSLINE_VERSION` in agent-skills' `toolkit/commands/gnar-statusline.md`. Until
-   that pin moves, no plugin user sees any of it.
+3. Cut an **annotated** tag at that commit (`v1.0.0` is annotated; keep them consistent).
+4. **Publish** a GitHub release at that tag, pointing at this file's section.
 
-Step 4 is a separate repo and a separate review. Cutting the tag before that pin moves is
-fine; moving the pin before the tag exists is not — the command's `curl` 404s and it
-refuses to write a partial install.
+Step 4 is the delivery itself, not paperwork after it. `/gnar-statusline` resolves
+`releases/latest` at install time (agent-skills `#426` deleted the version it used to
+hardcode), so the moment the release is published every subsequent run installs it — there
+is nothing to bump in agent-skills and no second review. Two consequences:
+
+- **Publish, don't draft.** The `releases/latest` redirect skips drafts, so a draft release
+  delivers nothing while looking done.
+- **Tag first, release second.** A release pointing at a tag that doesn't exist yet leaves
+  the command's `curl` 404ing, and it refuses to write a partial install.
+
+Verify a release actually landed:
+
+```sh
+curl -fsSL -o /dev/null -w '%{url_effective}\n' \
+  https://github.com/TheGnarCo/claude-statusline/releases/latest
+```
