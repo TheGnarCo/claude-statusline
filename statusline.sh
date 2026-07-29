@@ -855,8 +855,24 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
   # that (it would hand the name back untouched and overrun anyway).
   b_max=$branch_max
   w_max=$wt_max
+  # Claude Code names a worktree branch "worktree-<name>", so the "/wt" suffix
+  # usually spends 1+len(wt) columns restating text the branch already carries —
+  # 23 of them for "@worktree-underline-links-1-1-1/underline-links-1-1-1". When
+  # the branch already contains the name, show it IN PLACE: that run of the branch
+  # renders magenta, the same color the suffix used, so the cell still answers
+  # "which worktree?" at zero extra width.
+  #
+  # Matched only at a name boundary (the whole branch, or delimited by -/_), so a
+  # short worktree name can't claim a coincidental substring of an unrelated
+  # branch and suppress a suffix that was carrying real information.
+  wt_inline=0
+  if [ -n "$wt" ] && [ -n "$branch" ]; then
+    case "$branch" in
+      "$wt" | *[-/_]"$wt" | "$wt"[-/_]*) wt_inline=1 ;;
+    esac
+  fi
   show_wt=0
-  [ -n "$wt" ] && show_wt=1
+  [ -n "$wt" ] && [ "$wt_inline" -eq 0 ] && show_wt=1
   if [ -n "$cols" ]; then
     avail=$((cols - 3 - ct_width))
 
@@ -902,10 +918,19 @@ if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
 
   # Truncate the *displayed* text only; the hyperlink target keeps the full ref.
   b_txt=$(trunc_mid "$b" "$b_max")
+  # Recolor, never re-measure: b_plain below still counts b_txt, and the highlight
+  # is only applied when the run survived truncation whole. Switching to MAGENTA
+  # and back to BLUE (not RST) keeps the bold and the link underline intact.
+  b_render=$b_txt
+  if [ "$wt_inline" -eq 1 ]; then
+    case "$b_txt" in
+      *"$wt"*) b_render="${b_txt%%"$wt"*}${MAGENTA}${wt}${BLUE}${b_txt#*"$wt"}" ;;
+    esac
+  fi
   if [ -n "$repo_https" ] && [ -n "$branch" ]; then
-    b_disp=$(osc8 "$repo_https/tree/$branch" "$b_txt")
+    b_disp=$(osc8 "$repo_https/tree/$branch" "$b_render")
   else
-    b_disp=$b_txt
+    b_disp=$b_render
   fi
   b_plain="${SIG_BRANCH}${b_txt}"
   if [ "$show_wt" -eq 1 ]; then
@@ -986,10 +1011,16 @@ if [ -z "$ctx_flag" ]; then
   esac
 fi
 
-# Effort: title-case the first letter, but the multi-char tiers read wrong that
-# way ("Xhigh"/"Max"), so map those to compact labels.
+# Effort: a 2-3 char label per tier. Every tier is abbreviated, not just the ones
+# that read wrong title-cased ("Xhigh"), because the cell is a dial position — you
+# read it against the other tiers, not as a word — and "Medium" spent 6 columns
+# saying what "Med" says. An unknown tier still title-cases so a new one from
+# Claude Code renders legibly instead of vanishing.
 case "$effort_level" in
   "") effort_cap="" ;;
+  low) effort_cap="Lo" ;;
+  medium) effort_cap="Med" ;;
+  high) effort_cap="Hi" ;;
   xhigh) effort_cap="XHi" ;;
   max) effort_cap="Max" ;;
   *) effort_cap="$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')${effort_level:1}" ;;
@@ -1040,21 +1071,44 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
 # "fit the row" on its own, so nothing shortened — and gflush then shed the entire
 # cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
 # row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
+# The per-hour burn is the row's most expendable text: derived, ~9 columns, and
+# recomputable from the total, which is the half you cannot get back. So it is kept
+# only when the WHOLE row still fits on ONE line with it — a burn rate that costs a
+# wrapped line costs more than it says.
+#
+# Projected width = title + the space after it + every group already flushed + this
+# group as it stands + the telemetry chip that always follows (its text + brackets;
+# it is the last group either way). Measuring the row, not the money cell alone, is
+# what makes this correct in both directions: cell-alone let the full string "fit"
+# while gflush then shed the entire cost member, losing the TOTAL too — at
+# COLUMNS=52 the row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
+#
+# The separator counts only when something is actually there. Adding it
+# unconditionally cost a cost-only group its burn rate at an exact fit (19 columns
+# into 19), which is the very case the check exists for.
 if [ -n "$cols" ] && [ -n "$money" ]; then
-  _mu=0
-  for ((_mi = 0; _mi < ${#_gm_plain[@]}; _mi++)); do
-    [ "$_mi" -gt 0 ] && _mu=$((_mu + 1))
-    _mu=$((_mu + ${#_gm_plain[_mi]}))
-  done
-  # 2 brackets + what's there + a separator ONLY if something is there + the cell.
-  # Counting the separator unconditionally stripped the burn rate from a cost-only
-  # group that fit exactly (19 cols into 19 at COLUMNS=27) — the very case this
-  # check was written for.
-  _msep=0
-  [ "${#_gm_plain[@]}" -gt 0 ] && _msep=1
-  if [ $((2 + _mu + _msep + ${#money})) -gt "$cols" ]; then
-    money=${money%% (*}
-  fi
+  case "$money" in
+    *' ('*)
+      _rw=${#title_txt} # title_len is not assigned until the packer, below
+      for ((_ri = 0; _ri < ${#seg_len[@]}; _ri++)); do _rw=$((_rw + seg_len[_ri])); done
+      # The space after the title, which the packer adds before the FIRST group —
+      # so it is owed whenever there is a title, not only once a group has flushed
+      # (this group may be the first one).
+      [ "${#title_txt}" -gt 0 ] && _rw=$((_rw + 1))
+      _gw=0
+      for ((_ri = 0; _ri < ${#_gm_plain[@]}; _ri++)); do
+        [ "$_ri" -gt 0 ] && _gw=$((_gw + 1))
+        _gw=$((_gw + ${#_gm_plain[_ri]}))
+      done
+      [ "${#_gm_plain[@]}" -gt 0 ] && _gw=$((_gw + 1)) # separator before the cost
+      _rw=$((_rw + 2 + _gw + ${#money}))               # this group's own brackets
+      case "$telem_state" in
+        tagged) _rw=$((_rw + 11)) ;;
+        untagged) _rw=$((_rw + 14)) ;;
+      esac
+      [ "$_rw" -gt "$cols" ] && money=${money%% (*}
+      ;;
+  esac
 fi
 gadd "${GREEN}${money}${RST}" "$money"
 gflush

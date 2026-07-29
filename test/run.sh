@@ -750,13 +750,64 @@ out=$(run_sl 48 "$P_STYLE_LONG" | strip_ansi | line1_block)
 case "$out" in *'Deep Research Mode'*) c=0 ;; *) c=1 ;; esac
 assert "config group: a style that fits is not ellipsized" "$c"
 
-# Cost-only at a width where the full cell fits EXACTLY: the burn rate must survive.
-# An unconditional separator in the fit check made this strip the burn at 19-of-19.
+# The burn rate is kept only when the WHOLE ROW fits on one line with it. Pinned at
+# the boundary from both sides: at the width where the row fits it exactly it must
+# survive (an off-by-one here silently costs the cell every time), and one column
+# narrower it must be the BURN that goes — not the total, and not by wrapping.
+# Match on the '/h)' suffix, not the figure — a literal '$7...' trips SC2016.
+# Non-git dir: the boundary width is a property of THIS row, and a git group +
+# telem chip would move it.
+cd "$NONGIT" || exit 2
 P_COST_EXACT='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
-out=$(run_sl 27 "$P_COST_EXACT" | strip_ansi | line1_block)
-# Match on the burn-rate suffix, not the figure — a literal '$7...' trips SC2016.
+out=$(run_sl 34 "$P_COST_EXACT" | strip_ansi | line1_block)
 case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
-assert "session group: an exactly-fitting cost keeps its burn rate" "$c"
+assert "cost: a row that fits the burn exactly keeps it" "$c"
+
+out=$(run_sl 33 "$P_COST_EXACT" | strip_ansi | line1_block)
+case "$out" in *'/h)'*) c=1 ;; *'12.34'*) c=0 ;; *) c=1 ;; esac
+assert "cost: one column narrower sheds the burn, not the total" "$c"
+case "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" in 1) c=0 ;; *) c=1 ;; esac
+assert "cost: shedding the burn keeps line 1 unwrapped" "$c"
+
+# ── Worktree shown inside the branch, not appended to it ─────────────────────
+# The branch here is feature/some-really-long-branch-name, so a worktree named
+# "branch-name" is already part of it and must not be restated as a suffix — it is
+# recolored in place instead. Wide pane so nothing is truncated.
+cd "$COUNTERS" || exit 2
+P_WT_IN='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"branch-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+out=$(run_sl 120 "$P_WT_IN" | strip_ansi | line1_block)
+case "$out" in *'name/branch-name'*) c=1 ;; *) c=0 ;; esac
+assert "git group: a worktree already in the branch is not appended" "$c"
+case "$out" in *'feature/some-really-long-branch-name'*) c=0 ;; *) c=1 ;; esac
+assert "git group: the branch itself renders whole" "$c"
+# ...and the run is actually marked: magenta starts exactly at the worktree name.
+case "$(run_sl 120 "$P_WT_IN")" in *"${esc}[35mbranch-name"*) c=0 ;; *) c=1 ;; esac
+assert "git group: the worktree run inside the branch is recolored" "$c"
+
+# A worktree that is NOT part of the branch still earns its suffix.
+P_WT_OUT='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"unrelated-wt"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+case "$(run_sl 120 "$P_WT_OUT" | strip_ansi | line1_block)" in *'/unrelated-wt'*) c=0 ;; *) c=1 ;; esac
+assert "git group: an unrelated worktree name is still appended" "$c"
+
+# Boundary, not substring: "ranch-name" sits inside the branch but not at a name
+# boundary, so it must be treated as a different worktree and appended.
+P_WT_MID='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"ranch-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+case "$(run_sl 120 "$P_WT_MID" | strip_ansi | line1_block)" in *'/ranch-name'*) c=0 ;; *) c=1 ;; esac
+assert "git group: a mid-word match is not treated as the worktree" "$c"
+
+# ── Effort tiers are abbreviated ─────────────────────────────────────────────
+cd "$NONGIT" || exit 2
+P_EFF='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"effort":{"level":"LEVEL"}}'
+eff_bad=0
+for pair in "low Lo" "medium Med" "high Hi" "xhigh XHi" "max Max"; do
+  lvl=${pair%% *} want=${pair##* }
+  out=$(run_sl 100 "${P_EFF/LEVEL/$lvl}" | strip_ansi | line1_block)
+  case "$out" in *" $want"*) ;; *) eff_bad=1 ;; esac
+done
+assert "config group: every effort tier renders as its short label" "$eff_bad"
+# An unknown tier must still render rather than vanish.
+case "$(run_sl 100 "${P_EFF/LEVEL/turbo}" | strip_ansi | line1_block)" in *Turbo*) c=0 ;; *) c=1 ;; esac
+assert "config group: an unknown effort tier still renders" "$c"
 
 # ── Session name: the generic agent name is not a cell ───────────────────────
 # Every background/spawned agent that doesn't pick a type is named "claude", so
