@@ -92,10 +92,10 @@ P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens"
 
 P_FRESH='{"workspace":{"current_dir":"/work/scratch/tmp"},"context_window":{"used_percentage":3,"total_input_tokens":8000,"context_window_size":200000},"model":{"display_name":"Haiku 4.5"}}'
 
-# Rich line-1: agent.name (wins over session_name) and the xhigh effort tier —
-# exercises the fields folded onto line 1 by the compact layout, and locks the
-# concept grouping: agent name joins churn/cost in the session group, effort
-# xhigh -> "XHi" (not "Xhigh") joins the config group.
+# Rich line-1: the xhigh effort tier and the 1M context flag — exercises the
+# fields folded onto line 1 by the compact layout, and locks effort xhigh -> "XHi"
+# (not "Xhigh"). Both session_name and agent.name are carried in the payload on
+# purpose: neither is a cell any more, and this pins that they render nothing.
 P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
 
 # ── Cases (non-git) ────────────────────────────────────────────────────────
@@ -255,15 +255,12 @@ P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree"
 # can never shed — so an unclamped floor overran the row on that member alone
 # (19 cols into a 14-col budget at COLUMNS=22). Sweeping only 60+ missed it.
 #
-# P_L1_MAX_NONAME drops session_name, which is the DEFAULT state and shifts the
-# session group's first member from the capped name to the untruncated churn/cost
-# string — a hole neither other payload reaches (P_L1_MAX always sets the name,
-# P_DIRTY's churn is only 10 columns). The cost cell rendered 19 columns into a
-# 16-column budget before the per-hour burn learned to drop itself.
-# Dropping the name is NOT enough on its own: P_L1_MAX still has churn, which
-# becomes the first member and shields the cost behind gflush's shedding. The cost
-# has to be ALONE in its group to be the first member, which is the ordinary shape
-# of a session that has spent money without editing files.
+# P_L1_COST_ONLY puts the cost ALONE in the session group, making it that group's
+# first member — the one gflush can never shed. That is the ordinary shape of a
+# session that has spent money without editing files, and a hole neither other
+# payload reaches (P_DIRTY's churn is only 10 columns and shields the cost behind
+# it). The cost cell rendered 19 columns into a 16-column budget before the
+# per-hour burn learned to drop itself.
 P_L1_COST_ONLY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
 # 6-digit churn with no name: churn leads the group, and digits are the one member
 # that cannot be ellipsized (a truncated number reads as a real one), so it
@@ -809,31 +806,28 @@ assert "config group: every effort tier renders as its short label" "$eff_bad"
 case "$(run_sl 100 "${P_EFF/LEVEL/turbo}" | strip_ansi | line1_block)" in *Turbo*) c=0 ;; *) c=1 ;; esac
 assert "config group: an unknown effort tier still renders" "$c"
 
-# ── Session name: the generic agent name is not a cell ───────────────────────
-# Every background/spawned agent that doesn't pick a type is named "claude", so
-# the cell rendered a word that neither identifies the pane nor tells two agents
-# apart. Non-git dir on purpose: this repo's own name would satisfy *claude*.
+# ── There is no name cell ────────────────────────────────────────────────────
+# Neither the agent name nor the session name renders. The untyped agent (every
+# background/spawned one) is the generic "claude", which names nothing and can't
+# tell two agents apart; the pane is already identified by the title's owner/repo
+# and the branch, so no name earns a column. Non-git dir on purpose: this repo's
+# own name would satisfy *claude*.
 cd "$NONGIT" || exit 2
 P_AGENT_BASE='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_lines_added":163,"total_lines_removed":34}'
 out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"claude"}}' | strip_ansi | line1_block)
 case "$out" in *claude*) c=1 ;; *) c=0 ;; esac
 assert "session group: the generic agent name renders no cell" "$c"
 case "$out" in *'+163/-34'*) c=0 ;; *) c=1 ;; esac
-assert "session group: suppressing the generic name keeps the churn" "$c"
-
-out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"Claude"}}' | strip_ansi | line1_block)
-case "$out" in *[Cc]laude*) c=1 ;; *) c=0 ;; esac
-assert "session group: the generic agent name is matched case-insensitively" "$c"
+assert "session group: dropping the name keeps the churn" "$c"
 
 out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"reviewer"}}' | strip_ansi | line1_block)
-case "$out" in *reviewer*) c=0 ;; *) c=1 ;; esac
-assert "session group: a deliberately-named agent still renders" "$c"
+case "$out" in *reviewer*) c=1 ;; *) c=0 ;; esac
+assert "session group: a deliberately-named agent renders no cell either" "$c"
 
-# A generic agent name must not MASK a real session name — clearing it hands the
-# slot back to session_name rather than leaving the pane unlabelled.
-out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"claude"},"session_name":"mine"}' | strip_ansi | line1_block)
-case "$out" in *mine*) c=0 ;; *) c=1 ;; esac
-assert "session group: a generic agent name falls back to session_name" "$c"
+# ...and the session name does not inherit the slot the agent name gave up.
+out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"reviewer"},"session_name":"mine"}' | strip_ansi | line1_block)
+case "$out" in *mine*) c=1 ;; *) c=0 ;; esac
+assert "session group: the session name renders no cell" "$c"
 
 # ── Output style: the built-in style is not a cell ───────────────────────────
 # Claude Code names the default style in the payload ("claude"; older builds

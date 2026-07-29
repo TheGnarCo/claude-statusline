@@ -5,6 +5,31 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v1.1.3
+
+The name cell is gone. v1.1.2 dropped only the *generic* agent name; this drops the slot
+itself — a deliberately-named agent, and your `session_name` behind it, no longer render.
+Nothing else moves: `subagent-statusline.sh` and `install.sh` are unchanged, and there are
+no new dependencies.
+
+```
+v1.1.2  TheGnarCo/claude-statusline [@worktree-drop-agent-name !5 +163/-34][reviewer Opus 5 1M Hi $1.23 ($7.38/h)][telem tag]
+v1.1.3  TheGnarCo/claude-statusline [@worktree-drop-agent-name !5 +163/-34][Opus 5 1M Hi $1.23 ($7.38/h)][telem tag]
+```
+
+### Why
+
+The cell was justified by "which of my many concurrent tabs is this?", and it answered that
+badly. Every background or spawned agent that never picked a type reports the name `claude`
+— which names nothing and cannot tell two concurrent agents apart — so on the panes where
+the question is actually asked, the slot was either empty or a non-answer. The named case
+that did earn it (`--agent reviewer`) is rare enough that the column was mostly spent on
+nothing, and the pane already carries two identifiers that are always right: the title's
+`owner/name` and the branch.
+
+So the config group now opens on the model, `session_name` is no longer read from the
+payload at all, and a session that set one gets the columns back.
+
 ## v1.1.2
 
 Line 1 is re-cut: four brackets become three, and every cell that was saying nothing is
