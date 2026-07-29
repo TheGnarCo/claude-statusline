@@ -5,6 +5,75 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v1.1.2
+
+Line 1 is re-cut: four brackets become three, and every cell that was saying nothing is
+gone. Same information, ~40 fewer columns on a typical worktree row. `subagent-statusline.sh`
+and `install.sh` are unchanged, and there are no new dependencies.
+
+```
+v1.1.1  TheGnarCo/claude-statusline [@worktree-underline-links-1-1-1/underline-links-1-1-1 !2 +163/-34][claude $1.23 ($7.38/h)][Opus 5 1M High claude I][telem tag]
+v1.1.2  TheGnarCo/claude-statusline [@worktree-underline-links-1-1-1 +163/-34][Opus 5 1M Hi $1.23 ($7.38/h)][telem tag]
+```
+
+### The session group is dissolved
+
+Its three cells went where they belong, and the bracket is gone:
+
+| cell | now lives |
+| --- | --- |
+| `+N/-M` churn | end of the **git** group — it is what this session did to *this* working tree, so it reads with the tree's own state. Last in the group, so it sheds before the counters: they say what is there now, the churn says how it got there. |
+| name | front of the **config** group — it answers "which of my many concurrent tabs is this?" before anything about the model matters. |
+| `$cost ($/h)` | end of the **config** group — the group's one derived number, and the only member that keeps moving on its own. |
+
+### Cells that said nothing are gone
+
+- **The generic agent name.** A background/spawned agent that never picked a type is named
+  `claude`, so the cell rendered a magenta word on every agent pane that neither identified
+  the pane nor told two concurrent agents apart. A deliberately-named agent (`reviewer`)
+  still earns it, and a suppressed generic name hands the slot back to `session_name`
+  instead of masking it.
+- **The vim-mode chip.** One character of live state that nobody was reading, and its slot
+  cost the output style a column whenever the group had to shed.
+
+### The worktree renders inside the branch
+
+Claude Code names a worktree branch `worktree-<name>`, so the `/wt` suffix was spending 23
+columns restating text the branch already carried. That run of the branch is recolored
+magenta in place instead — the same color the suffix used — so the cell still answers
+"which worktree?" at zero extra width.
+
+Matched only at a name boundary (the whole branch, or delimited by `-` `/` `_`), so a short
+worktree name cannot claim a coincidental substring and suppress a suffix that was carrying
+real information; a worktree whose name genuinely is not in the branch still gets its
+`/suffix`.
+
+### Smaller change, same meaning
+
+- **Effort tiers are abbreviated**: `Lo` / `Med` / `Hi` / `XHi` / `Max`. The cell is a dial
+  position — read against the other tiers, not as a word — and `Medium` spent 6 columns
+  saying what `Med` says. An unknown tier still title-cases rather than vanishing.
+- **The per-hour burn is gated on the whole row**, not just its own group: it is derived,
+  ~9 columns, and recomputable from the total, so a burn rate that costs a wrapped line
+  costs more than it says. This subsumes the old group-local check, and the two collapsed
+  into one.
+- **The telemetry chip is two shades of one hue** — dim burnt orange for covered, bright
+  orange for untagged — rather than green-vs-yellow implying two unrelated states. Nothing
+  rests on telling the shades apart: the chips already differ by the word *no*. Both have a
+  256-color fallback.
+
+### Also
+
+The test suite grew from 58 assertions to 82, and every golden snapshot was regenerated and
+reviewed. One second-order effect worth naming: merging groups makes each one wider, so a
+narrow pane wraps the title onto its own line slightly sooner than v1.1.1 did.
+
+Docs-only, shipped in `main` but not in this release's scripts: `/gnar-statusline` tracks
+`releases/latest` rather than a pinned tag (agent-skills `#426`), so nothing needs bumping
+on that side — corrected in `#12` after v1.1.1's notes claimed otherwise.
+
+**Full diff:** [`v1.1.1...v1.1.2`](https://github.com/TheGnarCo/claude-statusline/compare/v1.1.1...v1.1.2)
+
 ## v1.1.1
 
 Two small line-1 corrections. No new dependencies; `subagent-statusline.sh` and
