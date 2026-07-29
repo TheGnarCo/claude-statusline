@@ -406,6 +406,17 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
   esac
 done <<< "$fields"
 
+# Agent name: drop the generic one. A background/spawned agent defaults to the
+# catch-all type, which is literally named "claude" — the same non-answer the
+# built-in output style is, on every agent pane, and it can't distinguish two
+# concurrent agents from each other. A deliberately-named agent ("reviewer") still
+# earns the cell. Clearing it rather than special-casing the render also lets a
+# session_name fall back into the slot instead of being masked by a word that
+# says nothing.
+case "$(printf '%s' "$agent_name" | tr '[:upper:]' '[:lower:]')" in
+  claude) agent_name="" ;;
+esac
+
 # Output style: drop the built-in one. Claude Code reports the default style by
 # name ("claude"; older builds "default"), so the cell rendered on every session
 # that had never touched /output-style — a permanent magenta word that told you

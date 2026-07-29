@@ -756,6 +756,32 @@ out=$(run_sl 27 "$P_COST_EXACT" | strip_ansi | line1_block)
 case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
 assert "session group: an exactly-fitting cost keeps its burn rate" "$c"
 
+# ── Session name: the generic agent name is not a cell ───────────────────────
+# Every background/spawned agent that doesn't pick a type is named "claude", so
+# the cell rendered a word that neither identifies the pane nor tells two agents
+# apart. Non-git dir on purpose: this repo's own name would satisfy *claude*.
+cd "$NONGIT" || exit 2
+P_AGENT_BASE='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_lines_added":163,"total_lines_removed":34}'
+out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"claude"}}' | strip_ansi | line1_block)
+case "$out" in *claude*) c=1 ;; *) c=0 ;; esac
+assert "session group: the generic agent name renders no cell" "$c"
+case "$out" in *'+163/-34'*) c=0 ;; *) c=1 ;; esac
+assert "session group: suppressing the generic name keeps the churn" "$c"
+
+out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"Claude"}}' | strip_ansi | line1_block)
+case "$out" in *[Cc]laude*) c=1 ;; *) c=0 ;; esac
+assert "session group: the generic agent name is matched case-insensitively" "$c"
+
+out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"reviewer"}}' | strip_ansi | line1_block)
+case "$out" in *reviewer*) c=0 ;; *) c=1 ;; esac
+assert "session group: a deliberately-named agent still renders" "$c"
+
+# A generic agent name must not MASK a real session name — clearing it hands the
+# slot back to session_name rather than leaving the pane unlabelled.
+out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"claude"},"session_name":"mine"}' | strip_ansi | line1_block)
+case "$out" in *mine*) c=0 ;; *) c=1 ;; esac
+assert "session group: a generic agent name falls back to session_name" "$c"
+
 # ── Output style: the built-in style is not a cell ───────────────────────────
 # Claude Code names the default style in the payload ("claude"; older builds
 # "default"), so rendering it verbatim pinned a magenta word onto every session
