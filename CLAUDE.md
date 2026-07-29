@@ -24,32 +24,41 @@ The `README.md` is the user-facing reference for what each cell means.
 Two paths, and **both install a copy** — nothing here is read live from a checkout:
 
 1. **The Gnar plugin.** [`TheGnarCo/agent-skills`](https://github.com/TheGnarCo/agent-skills)
-   ships a `/gnar-statusline` command in its `toolkit` plugin. It fetches a **pinned tag**
-   of this repo and copies the scripts into `~/.claude/`. Users are never on `main`.
+   ships a `/gnar-statusline` command in its `toolkit` plugin. It resolves this repo's
+   **latest GitHub release** at install time (via the `releases/latest` redirect) and copies
+   the scripts into `~/.claude/`. Users are never on `main`, and **no version is pinned on
+   that side** — agent-skills `#426` deleted the hardcoded tag.
 2. **`install.sh`**, for people who don't run the plugin — symlinks a local clone into
    `~/.local/bin`.
 
 Practical consequences:
 
-- **Tag releases deliberately.** A merge to `main` reaches nobody until someone bumps the
-  pin in agent-skills. That is the intended review gate — don't try to make the plugin
-  track `main`.
+- **Publishing a release IS the delivery — there is no second gate.** A merge to `main`
+  reaches nobody; publishing a GitHub release reaches every plugin user on their next
+  `/gnar-statusline` run, with nothing to review or bump in agent-skills. The release is
+  therefore the whole review gate, so cut one deliberately — and don't try to make the
+  plugin track `main`. A **draft** release delivers nothing: the `releases/latest` redirect
+  skips drafts.
 - **The plugin's command is install-only and does NOT describe this layout.** It fetches the
-  pinned scripts, wires both keys, verifies, and links this repo for what they render — it
+  released scripts, wires both keys, verifies, and links this repo for what they render — it
   says outright "Don't restate its contents here or narrate the segments to the user". There
   is no Customize mode and no segment inventory: agent-skills `#422`/`#424` removed both, and
   its changelog links a `v1.0.0...v1.1.0` compare rather than re-listing cells. So a layout
-  change here needs the **pin moved and nothing rewritten** on that side.
+  change here needs **nothing rewritten and nothing bumped** on that side.
 
-  This entry used to claim the opposite, and that stale claim got repeated as outstanding
-  debt across several PRs here before anyone checked. Check rather than trust it:
+  This entry has twice claimed work was owed to agent-skills that wasn't — first a Customize
+  mode that `#424` had deleted, then a version pin that `#426` had deleted — and both times
+  the stale claim was repeated as outstanding debt across several PRs here before anyone
+  checked. Check rather than trust it:
 
   ```sh
   gh api repos/TheGnarCo/agent-skills/contents/toolkit/commands/gnar-statusline.md \
-    --jq .content | base64 -d | grep -niE 'customize|counters group|vim-mode chip|model group'
+    --jq .content | base64 -d |
+    grep -niE 'customize|counters group|vim-mode chip|model group|VERSION='
   ```
 
-  If that returns nothing, the command is layout-agnostic and only the pin matters.
+  Nothing back means the command is both layout-agnostic and version-agnostic: a release
+  here is the entire delivery, and agent-skills needs no PR.
 
   This is about the command's *prose* only. There is a real behavioural coupling to
   agent-skills — the telem-tag chip has to agree with that plugin's detection hook — and it
