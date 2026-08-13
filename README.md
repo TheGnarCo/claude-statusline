@@ -8,15 +8,35 @@ Targets macOS system bash (3.2) so it's a portable drop-in.
 
 ```
 TheGnarCo/claude-statusline [@main/wt ^2 !2 +3][reviewer +42/-7 $1.23 ($7.38/h)][Opus 4.8 1M High N Explanatory][telem tag]
-CTX ####--------------------|-----  13% 128k/1M cache 78% 67%->AC
-5h  |###########------------------  40% 3h 12m left [+8%] 7d 22%
+CTX ~~~~....................|.....  13% 128k/1M cache 78% 67%->AC
+5h  |###########------------------  40% 3h 12m left [+8%]
+7d  :::::::::::::|::______________  56% 3d 4h left [+12%]
 ```
 
-Pure ASCII (`#` fill, `-` track, `|` clock/threshold, `*` burn projection) — no Nerd Font
-required. Bars size themselves to the terminal via the `COLUMNS` env var, holding back a
-small margin so they never overrun Claude's own chrome. The layout stays compact: **2–4
-lines** — identity and config share one row of colored `[]` groups, and the 7-day window
-shows only when it's the binding one.
+(The 7-day row appears only when it's the binding window; otherwise it rides on the 5h line
+as a compact `7d 22%` badge and this is a three-line statusline.)
+
+Pure ASCII — no Nerd Font required. **Each bar row has its own fill and track glyph**, so
+you know which row you're reading from its texture alone, before color and with color off
+entirely:
+
+| Row | Fill | Track | Gradient |
+| --- | --- | --- | --- |
+| `CTX` context window | `~` wave | `.` dots | grey → **purple** → tinted white |
+| `5h` live window | `#` solid | `-` rule | grey → **warm** → tinted white |
+| `7d` long window | `:` dotted | `_` baseline | grey → **blue** → tinted white |
+
+Shared across all three: `|` clock/threshold and `*` burn projection (`!` when the
+projection runs off the end). Every gradient starts from the same grey and ends in a white
+tinted toward its own hue, so the three bars read as one system — and because they share
+that grey origin, a nearly empty bar is grey on every row. That is why the rows differ by
+*glyph* and not by hue alone: at low fill the glyph pair is the only thing distinguishing
+them, and under `NO_COLOR` it is the only thing at all.
+
+Bars size themselves to the terminal via the `COLUMNS` env var, holding back a small margin
+so they never overrun Claude's own chrome. The layout stays compact: **2–4 lines** —
+identity and config share one row of colored `[]` groups, and the 7-day window shows only
+when it's the binding one.
 
 - **Line 1** — the repo as **`owner/name`** (linked to GitHub; the owner is muted so the repo name stays the anchor), or the cwd's last two components outside a repo — then **one `[]` per concept**: a bracket is a group of related cells, not a single field, so the eye stops three times instead of eight. Groups pack left-to-right and wrap to a continuation line only when they won't fit the pane. Members are space-separated, each keeping its own color, and any member with nothing to say drops out (an all-empty group renders no bracket at all):
   - **`[@branch/worktree counters +added/-removed]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `x`conflict `^`ahead `v`behind `!`modified `+`staged `?`untracked `*`stash, and finally this session's churn — e.g. `[@main/wt ^2 !2 +3 +120/-45]`. The churn trails because the counters say what is in the tree now and the churn says how it got there; it's the first member of the group to go on a narrow pane. Ordered most-urgent-first, which is also the order a too-narrow pane gives them up in (from the tail): a conflict or unpushed commits are what you cannot afford to miss, a stash count is what you can. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget. When the worktree name is **already part of the branch** — which it always is for Claude Code's `worktree-<name>` branches — it isn't restated as a suffix; that run of the branch is recolored magenta in place, which is the same information for 23 fewer columns (`[@worktree-my-fix/my-fix]` → `[@worktree-`**`my-fix`**`]`). A worktree whose name isn't in the branch still gets its `/suffix`.
@@ -24,9 +44,13 @@ shows only when it's the binding one.
   - **`[telem tag]` / `[no telem tag]`** — **telemetry coverage**. Whether this repo's Claude Code usage is attributed to a project in [telem.thegnar.info](https://telem.thegnar.info) (a `project.name` OTEL attribute). Two shades of one hue, because this is a single dial with two positions rather than two unrelated states: dim burnt orange when it is; bright orange when it isn't and the usage lands there under *(untagged)* — run `/toolkit:project-telem-tag` in the repo to fix that. Nothing rests on telling the shades apart, since the chips already differ by the word *no*. Both states link to the dashboard. Only rendered inside a git repo, and it sits last so it's the first group to spill onto a continuation line on a narrow pane.
 
   (No PR cell — Claude Code already surfaces the current PR.)
-- **Line 2** — context window with a blackbody-gradient bar; an amber cell marks the autocompact threshold. The `%` escalates green→amber→red as it approaches; below the threshold a `N%->AC` badge shows live headroom, and once crossed a `[AC]` chip (plus `[200k+]` past 200k tokens). Trailing `Nk/Nk` is tokens-in-context / window size, and `cache N%` is the share served from the prompt cache.
-- **Line 3** — the 5-hour rate-limit window. The blue pip is the wall-clock position in the window; the yellow pip projects end-of-window usage at the current burn rate; `time left` counts down to the reset; `[+N%]` is usage-vs-clock delta. When the 7-day window isn't binding it rides here as a compact `7d N%` badge.
-- **Line 4** — the 7-day window, shown as its own bar only when it's ≥50% or busier than the 5-hour window.
+- **Line 2** — context window: a `~` bar on a purple gradient, with an **amber** cell marking the autocompact threshold. The `%` escalates green→amber→red as it approaches; below the threshold a `N%->AC` badge shows live headroom, and once crossed a `[AC]` chip (plus `[200k+]` past 200k tokens). Trailing `Nk/Nk` is tokens-in-context / window size, and `cache N%` is the share served from the prompt cache.
+- **Line 3** — the 5-hour rate-limit window: a `#` bar on the warm gradient. The **blue** pip is the wall-clock position in the window; the yellow pip projects end-of-window usage at the current burn rate; `time left` counts down to the reset; `[+N%]` is usage-vs-clock delta. When the 7-day window isn't binding it rides here as a compact `7d N%` badge.
+- **Line 4** — the 7-day window: a `:` bar on the blue gradient, shown only when it's ≥50% or busier than the 5-hour window. Its clock pip is **pink**, not blue — a pip has to be findable against its own row's fill, and blue-on-blue isn't.
+
+Each row's clock pip is picked to stay legible across that row's whole gradient, which is
+why the three differ: amber reads against purple, blue against warm, pink against blue. The
+pip's *shape* carries the meaning; its color is chosen purely so you can find it.
 
 Every linked cell — repo, branch, telemetry chip — is an OSC8 hyperlink and renders
 **underlined**, so you can tell what's clickable before you try it; ⌘-click them in a

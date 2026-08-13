@@ -5,6 +5,62 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v1.2.0
+
+Each bar row now has its own vocabulary. `CTX` is a `~` wave on dots over a purple gradient,
+`7d` is a `:` dotted band on underscores over a blue one, and `5h` keeps `#` on `-` over the
+warm blackbody ramp it always had. You can tell which row you're reading from its texture
+alone. `subagent-statusline.sh` and `install.sh` are unchanged, and there are no new
+dependencies.
+
+```
+v1.1.3  CTX ################----------------|-------  42% 84k/200k 38%->AC
+        5h  |############################-----------  73% 5h 0m left [+73%]
+        7d  |#######################----------------  60% 7d 0h left [+60%]
+
+v1.2.0  CTX ~~~~~~~~~~~~~~~~................|.......  42% 84k/200k 38%->AC
+        5h  |############################-----------  73% 5h 0m left [+73%]
+        7d  |:::::::::::::::::::::::________________  60% 7d 0h left [+60%]
+```
+
+### Why
+
+Three bars in one vocabulary read as one block. You located a row by counting down from the
+top rather than recognising it, which is slowest at exactly the moment it matters — glancing
+mid-task to see whether it's the context window or the week that's nearly gone.
+
+Both halves of a bar carry the row's identity, because **fill and track fail at opposite
+ends of the range.** A fill-only scheme says nothing on a nearly empty bar: at 2% the clock
+pip lands on the single filled cell and overwrites it, so a window row shows no fill glyph
+at all. A track-only scheme says nothing on a full one. Pairing them keeps every row legible
+at every level, with fill always the denser half so the fill/track contrast that makes a bar
+readable survives inside each row.
+
+Glyphs come from what nothing else claims: `# - | * !` are spoken for inside the bar and
+`+ ^ v ? x @` on line 1.
+
+### Color, and why it isn't the mechanism
+
+Each row also gets its own gradient family, and all three run the same arc — a **shared grey
+at empty**, up through the row's own hue, out to a **white tinted toward that hue** at full.
+So the bars read as one system, and a nearly empty bar is grey on every row. That last part
+is the point: at low fill hue distinguishes nothing, and under `NO_COLOR` it contributes
+nothing at all. Hue sharpens the glyph distinction; it never carries it.
+
+The clock pips changed with the ramps. A pip *replaces* its cell, so it is ink on the
+terminal background — what makes it findable is contrast with that background plus
+perceptual distance from the fill ink beside it. Picked that way the three rows disagree, and
+have to: amber reads against purple, blue against warm, and **7d's pip is pink**, because
+against a blue ramp both a blue pip (collides with the ramp's peak) and a near-white one
+(collides with its tinted-white terminus) measure ΔE ≈ 6 — present but invisible. Pink
+measures ΔE ≈ 73. The pip's *shape* still carries the meaning; its color is chosen purely so
+you can find it.
+
+Non-truecolor terminals get three distinct 256-color ramps rather than one, or the tiers
+would not exist for those users at all. `run.sh` grew assertions for the glyph pairs, the
+three ramps, the 256-color fallbacks and the pip/ramp collision — the goldens are
+ANSI-stripped and catch the glyphs but are blind to every hue.
+
 ## v1.1.3
 
 The name cell is gone. v1.1.2 dropped only the *generic* agent name; this drops the slot

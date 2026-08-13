@@ -142,6 +142,110 @@ assert "exit 0 when 7d hidden" "$?"
 run_sl 120 "$P_SEVEN_BINDING" > /dev/null
 assert "exit 0 when 7d shown" "$?"
 
+# ── Per-row bar vocabulary (glyph, then hue) ─────────────────────────────────
+# Each bar row has its own fill+track pair AND its own gradient family. The
+# goldens catch the glyphs (they survive ANSI-stripping) but are blind to every
+# hue, so the ramps need presence/absence assertions here or they are untested.
+#
+# P_SEVEN_BINDING renders all three rows: CTX 20%, 5h 10%, 7d 60%.
+bar_line() { # bar_line <label> — the ANSI-stripped bar row for that label
+  run_sl 120 "$P_SEVEN_BINDING" | strip_ansi | grep "^$1"
+}
+raw_line() { # raw_line <n> — bar row n (1=CTX, 2=5h, 3=7d) with escapes intact
+  run_sl 120 "$P_SEVEN_BINDING" | sed -n "$((n_off + $1))p"
+}
+n_off=1 # line 1 is the identity row; the bars follow it
+
+# Glyphs: every row must show its own pair, and NOT another row's fill.
+glyph_bad=0
+case "$(bar_line CTX)" in *'~'*'.'*) ;; *) glyph_bad=1 ;; esac
+case "$(bar_line CTX)" in *'#'* | *':'*) glyph_bad=1 ;; esac
+case "$(bar_line '5h')" in *'#'*'-'*) ;; *) glyph_bad=1 ;; esac
+case "$(bar_line '5h')" in *'~'* | *':'*) glyph_bad=1 ;; esac
+case "$(bar_line '7d')" in *':'*'_'*) ;; *) glyph_bad=1 ;; esac
+case "$(bar_line '7d')" in *'#'* | *'~'*) glyph_bad=1 ;; esac
+assert "bars: each row uses only its own fill/track glyph pair" "$glyph_bad"
+
+# The glyph distinction must survive NO_COLOR — that is the whole reason the rows
+# differ by shape and not by hue alone.
+out_nc_bars=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 OTEL_RESOURCE_ATTRIBUTES='' \
+  bash "$SCRIPT" <<< "$P_SEVEN_BINDING")
+nc_bad=0
+case "$out_nc_bars" in *'~'*) ;; *) nc_bad=1 ;; esac
+case "$out_nc_bars" in *':'*) ;; *) nc_bad=1 ;; esac
+case "$out_nc_bars" in *'#'*) ;; *) nc_bad=1 ;; esac
+assert "bars: all three fill glyphs present under NO_COLOR" "$nc_bad"
+
+# Truecolor: the three families share one grey origin (74,79,92) and diverge to
+# their own hues.
+tc=$(run_sl 120 "$P_SEVEN_BINDING")
+ramp_bad=0
+case "$tc" in *"${esc}[38;2;74;79;92m"*) ;; *) ramp_bad=1 ;; esac
+assert "ramps: all families start from the shared grey origin" "$ramp_bad"
+
+# Per-row hue family, classified from the ACTUAL rendered colors rather than by
+# matching hardcoded triples (which would break on any ramp retune while proving
+# nothing about hue). Take the most saturated color on the row and name its
+# family by channel order: warm = R>=G>=B, purple = B>R>G, blue = B>G>R.
+#
+# Only colors appearing >=3 times count, which excludes the pips and the trailing
+# text (each appears at most twice) and leaves the bar fill — the thing under test.
+#
+# This needs a payload where all three bars are actually FULL: at 20% fill a bar
+# never leaves the shared grey origin, so a low-fill fixture cannot distinguish
+# the families and would assert nothing.
+P_FULL_BARS='{'"$DIR"',"context_window":{"used_percentage":100,"total_input_tokens":200000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'}}}'
+hue_family() { # hue_family <bar-row-n> — warm | purple | blue | none
+  run_sl 120 "$P_FULL_BARS" | sed -n "$((n_off + $1))p" |
+    grep -o '38;2;[0-9]*;[0-9]*;[0-9]*' | sed 's/38;2;//' | sort | uniq -c |
+    awk '$1 >= 3 {
+           split($2, c, ";"); r = c[1]; g = c[2]; b = c[3]
+           mx = r; if (g > mx) mx = g; if (b > mx) mx = b
+           mn = r; if (g < mn) mn = g; if (b < mn) mn = b
+           if (mx - mn > best) { best = mx - mn; br = r; bg = g; bb = b }
+         }
+         END {
+           if (best == 0) { print "none"; exit }
+           if (br >= bg && bg >= bb) print "warm"
+           else if (bb > br && br > bg) print "purple"
+           else if (bb > bg && bg > br) print "blue"
+           else print "other"
+         }'
+}
+hue_bad=0
+[ "$(hue_family 1)" = "purple" ] || hue_bad=1
+[ "$(hue_family 2)" = "warm" ] || hue_bad=1
+[ "$(hue_family 3)" = "blue" ] || hue_bad=1
+assert "ramps: CTX purple, 5h warm, 7d blue (classified from output)" "$hue_bad"
+
+# The clock pip must not collide with its own row's ramp. 7d is blue-ramped, so
+# its pip is pink (#ff5faf); reusing the 5h blue pip there measured dE ~6 against
+# the blue fill — near-invisible — and that is the regression this guards.
+five_raw=$(raw_line 2)
+seven_raw=$(raw_line 3)
+pip_bad=0
+case "$seven_raw" in *"${esc}[38;2;255;95;175m"*) ;; *) pip_bad=1 ;; esac
+case "$five_raw" in *"${esc}[38;2;96;200;255m"*) ;; *) pip_bad=1 ;; esac
+case "$seven_raw" in *"${esc}[38;2;96;200;255m"*) pip_bad=1 ;; esac
+assert "pips: 7d clock is pink, 5h clock is blue, neither leaks" "$pip_bad"
+
+# 256-color: three distinct indexed ramps, or the tier system vanishes for every
+# non-truecolor terminal. Compare the per-row index sets.
+idx_of() { # idx_of <n> — sorted unique 256-color indices on bar row n
+  COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color NO_COLOR='' \
+    OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_SEVEN_BINDING" |
+    sed -n "$((n_off + $1))p" | grep -o '38;5;[0-9]*' | sed 's/38;5;//' | sort -un | tr '\n' ' '
+}
+i_ctx=$(idx_of 1)
+i_five=$(idx_of 2)
+i_seven=$(idx_of 3)
+idx_bad=0
+[ -z "$i_ctx" ] && idx_bad=1
+[ "$i_ctx" = "$i_five" ] && idx_bad=1
+[ "$i_ctx" = "$i_seven" ] && idx_bad=1
+[ "$i_five" = "$i_seven" ] && idx_bad=1
+assert "256-color: three distinct indexed ramps, one per row" "$idx_bad"
+
 # ── Width discipline: no line may exceed COLUMNS ─────────────────────────────
 # The bars stretch to fill the row, so the width math must reserve room for each
 # line's *trailing* text (the CTX token/cache/AC/200k+ readout is the widest and
