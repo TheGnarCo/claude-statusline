@@ -10,8 +10,9 @@ bash (3.2) so it's a portable drop-in.
 
 - **`statusline.sh`** — the main statusline. Reads Claude Code's statusline JSON on
   stdin and emits 2–4 colored lines (identity/config row, a context-window bar, and the
-  5h/7d rate-limit windows). Pure ASCII pips (`#`/`-`/`|`/`*`), so no Nerd Font is
-  required; colors honor `NO_COLOR` and degrade to a 256-color ramp off truecolor.
+  5h/7d rate-limit windows). Pure ASCII pips — per-row fill/track pairs (`~`/`.` CTX,
+  `#`/`-` 5h, `:`/`_` 7d) plus the shared `|` marker and `*`/`!` projection — so no Nerd
+  Font is required; colors honor `NO_COLOR` and degrade to a 256-color ramp off truecolor.
 - **`subagent-statusline.sh`** — the agent-panel status line. Reads subagent JSON on
   stdin and emits `{"tasks":[...]}` in a single `jq` pass.
 - **`install.sh`** — symlinks both scripts into `~/.local/bin` as `claude-statusline`
@@ -111,6 +112,24 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   whether the session running the suite is itself tagged — this repo is, CI isn't, and
   that would flip all three git goldens). Don't introduce wall-clock, `$HOME`-relative, or
   ambient-env output without pinning it in `run.sh`.
+- **Each bar row is a tier: its own fill glyph, track glyph, and gradient family.**
+  `render_bar` takes a trailing `<class>` (`ctx` | `7d` | anything-else = 5h) that selects
+  all three; an unknown class falls through to the 5h pair so a caller that forgets it
+  degrades to the shipped look rather than rendering a bar with no fill. Two rules are
+  load-bearing and easy to break:
+  - **Fill must stay the denser half of its own pair** (`~` over `.`, `#` over `-`, `:` over
+    `_`). Swap one and the bar stops reading as a level. And both halves must differ per row,
+    because fill-only identity vanishes on a nearly empty bar — at 2% the clock pip lands on
+    the single filled cell and overwrites it — while track-only identity vanishes on a full
+    one.
+  - **A clock pip may not share its row's hue family.** Pips are ink on the terminal
+    background, so what makes one findable is background contrast plus perceptual distance
+    from the fill beside it. On the blue-ramped 7d row, both a blue pip and a near-white one
+    measure ΔE ≈ 6 against the fill (the ramp's peak and its tinted-white terminus) — which is
+    why `MARKER_7D` is pink at ΔE ≈ 73. `run.sh` guards this specific regression.
+  All three ramps share one grey origin and end in a white tinted toward their own hue, so a
+  nearly empty bar is grey on every row. That is deliberate, and it is why the glyph pair —
+  not hue — is what actually distinguishes the rows.
 - **Autocompact marker defaults to 80%.** The amber threshold cell / `N%->AC` headroom /
   `[AC]` chip assume autocompact fires at 80% of the context window. Override the marker
   with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) if a session's real threshold differs, or

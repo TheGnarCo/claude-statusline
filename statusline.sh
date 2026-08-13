@@ -34,12 +34,26 @@ ESC=$(printf '\033')
 BEL=$(printf '\007')
 # Each bar cell type is a distinct SHAPE (not just a distinct color), so the
 # marker / projection / fill stay legible in mono terminals and colorblind view.
-PIP_FILL='#'     # bar fill            (gradient)
-PIP_EMPTY='-'    # bar track           (muted)
 PIP_MARKER='|'   # clock / threshold   (marker color)
 PIP_PROJ='*'     # burn projection     (yellow)
 PIP_OVERFLOW='!' # projection overflow (bold red)
 SIG_BRANCH='@'   # branch    (evokes git @/HEAD)
+
+# Each bar row also gets its OWN fill+track pair, so a row is identifiable by
+# silhouette alone — before color, and under NO_COLOR where color contributes
+# nothing. The pairing is the point: fill-only identity vanishes on a nearly
+# empty bar (at 2% the clock pip lands on the single filled cell and overwrites
+# it, leaving a window row with no fill glyph at all), and track-only identity
+# vanishes on a full one. Pairing them keeps every row legible at every level.
+# Fill is always the denser half of its pair, preserving the fill/track contrast
+# that makes a bar readable at all. Glyphs are chosen from what nothing else
+# claims: '# - | * !' are spoken for above, and '+ ^ v ? x @' on line 1.
+PIP_FILL='#'      # 5h  fill  — solid band, the densest glyph in ASCII
+PIP_EMPTY='-'     # 5h  track — mid rule
+PIP_FILL_CTX='~'  # CTX fill  — wave, mid-height
+PIP_EMPTY_CTX='.' # CTX track — sparse dots
+PIP_FILL_7D=':'   # 7d  fill  — dotted band
+PIP_EMPTY_7D='_'  # 7d  track — baseline rule
 
 # ── Color capability ────────────────────────────────────────────────────────
 # Honor NO_COLOR (https://no-color.org) and dumb terminals; detect truecolor so
@@ -54,7 +68,7 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 # ── Style primitives ──────────────────────────────────────────────────────
 if [ "$USE_COLOR" -eq 0 ]; then
   UNDIM="" BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
-  NEAR_WHITE="" MARKER="" PROJ="" AUTOCOMPACT="" UL="" UL_OFF=""
+  NEAR_WHITE="" MARKER="" MARKER_7D="" PROJ="" AUTOCOMPACT="" UL="" UL_OFF=""
   TELEM_ON="" TELEM_OFF=""
 else
   UNDIM="${ESC}[22m"
@@ -71,15 +85,24 @@ else
   CYAN="${ESC}[36m"
   if [ "$TRUECOLOR" -eq 1 ]; then
     NEAR_WHITE="${ESC}[38;2;235;235;235m"
-    MARKER="${ESC}[38;2;96;200;255m"     # rate-window clock pip (blue)
-    PROJ="${ESC}[38;2;255;210;80m"       # burn projection pip (yellow)
-    AUTOCOMPACT="${ESC}[38;2;255;128;0m" # autocompact threshold cell (amber)
+    # A pip REPLACES its cell, so it is ink on the terminal background, not ink
+    # on the fill — what makes it findable is (a) contrast with that background
+    # and (b) perceptual distance from the fill ink beside it. Each row's pip is
+    # therefore picked to stay distinct across its OWN ramp's whole range. That
+    # rules out the obvious choices: on 7d a blue pip collides with the blue
+    # ramp's peak and a near-white one collides with its tinted-white terminus
+    # (both dE ~6), so 7d takes pink (dE ~73) instead.
+    MARKER="${ESC}[38;2;96;200;255m"     # 5h clock pip           (blue, on warm)
+    MARKER_7D="${ESC}[38;2;255;95;175m"  # 7d clock pip           (pink, on blue)
+    PROJ="${ESC}[38;2;255;210;80m"       # burn projection pip    (yellow)
+    AUTOCOMPACT="${ESC}[38;2;255;128;0m" # autocompact threshold  (amber, on purple)
     TELEM_ON="${ESC}[38;2;181;110;58m"   # telem chip, covered   (dim burnt orange)
     TELEM_OFF="${ESC}[38;2;255;160;60m"  # telem chip, untagged  (bright orange)
   else
     # 256-color approximations for terminals without truecolor.
     NEAR_WHITE="${ESC}[38;5;255m"
     MARKER="${ESC}[38;5;39m"
+    MARKER_7D="${ESC}[38;5;205m" # xterm 205 IS #ff5faf — exact, not an approximation
     PROJ="${ESC}[38;5;221m"
     AUTOCOMPACT="${ESC}[38;5;208m"
     TELEM_ON="${ESC}[38;5;130m"
@@ -195,29 +218,66 @@ pip_count_for_width() {
   echo "$n"
 }
 
-# Blackbody-style gradient at t (0..10000); sets globals _GR/_GG/_GB.
+# Ramp stops per row class; sets globals _S0R.._S4B. Every family runs the SAME
+# arc — a shared neutral grey at empty, up through its own saturated hue, out to
+# a hue-tinted white at full — so the three bars read as one system rather than
+# three unrelated color schemes, and a nearly empty bar looks consistent across
+# rows. That shared grey origin is deliberate, and it is exactly why hue can
+# never be the only signal: at low fill every family is still grey, which is the
+# work the per-row fill/track glyphs do.
+ramp_stops() {
+  case "$1" in
+    ctx) # deep purple — the context gauge
+      _S0R=74 _S0G=79 _S0B=92
+      _S1R=110 _S1G=72 _S1B=150
+      _S2R=158 _S2G=86 _S2B=224
+      _S3R=200 _S3G=158 _S3B=240
+      _S4R=238 _S4G=230 _S4B=250
+      ;;
+    7d) # blue intensity — the long window
+      _S0R=74 _S0G=79 _S0B=92
+      _S1R=56 _S1G=112 _S1B=168
+      _S2R=72 _S2G=168 _S2B=236
+      _S3R=150 _S3G=212 _S3B=246
+      _S4R=232 _S4G=244 _S4B=252
+      ;;
+    *) # warm blackbody — the live window; as shipped, bar the tinted terminus
+      _S0R=74 _S0G=79 _S0B=92
+      _S1R=176 _S1G=74 _S1B=58
+      _S2R=240 _S2G=160 _S2B=64
+      _S3R=255 _S3G=232 _S3B=144
+      _S4R=255 _S4G=250 _S4B=235
+      ;;
+  esac
+}
+
+# Gradient for row class $2 at t (0..10000); sets globals _GR/_GG/_GB. The
+# piecewise knees (3500/7000/9000) are the original blackbody ramp's, kept so
+# every family shares its pacing — slow through the low range, quickest across
+# the top — and so the warm family reproduces what shipped.
 gradient_at() {
   local t=$1 u
+  ramp_stops "$2"
   if [ "$t" -le 3500 ]; then
     u=$((t * 10000 / 3500))
-    _GR=$((74 + (176 - 74) * u / 10000))
-    _GG=$((79 + (74 - 79) * u / 10000))
-    _GB=$((92 + (58 - 92) * u / 10000))
+    _GR=$((_S0R + (_S1R - _S0R) * u / 10000))
+    _GG=$((_S0G + (_S1G - _S0G) * u / 10000))
+    _GB=$((_S0B + (_S1B - _S0B) * u / 10000))
   elif [ "$t" -le 7000 ]; then
     u=$(((t - 3500) * 10000 / 3500))
-    _GR=$((176 + (240 - 176) * u / 10000))
-    _GG=$((74 + (160 - 74) * u / 10000))
-    _GB=$((58 + (64 - 58) * u / 10000))
+    _GR=$((_S1R + (_S2R - _S1R) * u / 10000))
+    _GG=$((_S1G + (_S2G - _S1G) * u / 10000))
+    _GB=$((_S1B + (_S2B - _S1B) * u / 10000))
   elif [ "$t" -le 9000 ]; then
     u=$(((t - 7000) * 10000 / 2000))
-    _GR=$((240 + (255 - 240) * u / 10000))
-    _GG=$((160 + (232 - 160) * u / 10000))
-    _GB=$((64 + (144 - 64) * u / 10000))
+    _GR=$((_S2R + (_S3R - _S2R) * u / 10000))
+    _GG=$((_S2G + (_S3G - _S2G) * u / 10000))
+    _GB=$((_S2B + (_S3B - _S2B) * u / 10000))
   else
     u=$(((t - 9000) * 10000 / 1000))
-    _GR=255
-    _GG=$((232 + (255 - 232) * u / 10000))
-    _GB=$((144 + (255 - 144) * u / 10000))
+    _GR=$((_S3R + (_S4R - _S3R) * u / 10000))
+    _GG=$((_S3G + (_S4G - _S3G) * u / 10000))
+    _GB=$((_S3B + (_S4B - _S3B) * u / 10000))
   fi
 }
 
@@ -227,27 +287,69 @@ gradient_at() {
 # refresh). Index a cell by gi = i*(GRAD_N-1)/(pip_count-1). Non-truecolor uses a
 # cool→warm 256-color ramp; NO_COLOR leaves the entries empty (bare '#' fill).
 GRAD_N=24
-_grad_palette=()
-_grad256_ramp=(60 66 96 132 168 203 202 208 214 220 228)
+_grad_warm=() _grad_ctx=() _grad_7d=() _grad_tmp=()
+# 256-color fallbacks, one per family. NOT optional: without them every
+# non-truecolor terminal collapses all three families onto one ramp and the tier
+# system simply doesn't exist for those users. Each is ordered by increasing
+# brightness so the fill still reads as a level, and each ends on a tinted white
+# (230 #ffffd7 / 225 #ffd7ff / 195 #d7ffff) to mirror the truecolor terminus.
+_grad256_warm='60 66 96 132 168 203 202 208 214 220 230'
+_grad256_ctx='59 60 97 98 134 135 141 177 183 189 225'
+_grad256_7d='59 60 68 74 75 81 111 117 153 159 195'
+# Fills _grad_tmp for one family; the caller copies it to that family's array.
+# (Bash 3.2 has no nested arrays and no namerefs, so a copy beats indirection.)
 build_palette() {
-  local i t
+  local family=$1 i t ramp
+  local -a r256
+  case "$family" in
+    ctx) ramp=$_grad256_ctx ;;
+    7d) ramp=$_grad256_7d ;;
+    *) ramp=$_grad256_warm ;;
+  esac
+  read -ra r256 <<< "$ramp"
+  _grad_tmp=()
   for ((i = 0; i < GRAD_N; i++)); do
     t=$((i * 10000 / (GRAD_N - 1)))
     if [ "$USE_COLOR" -eq 0 ]; then
-      _grad_palette[i]=""
+      _grad_tmp[i]=""
     elif [ "$TRUECOLOR" -eq 1 ]; then
-      gradient_at "$t"
-      _grad_palette[i]="${ESC}[38;2;${_GR};${_GG};${_GB}m"
+      gradient_at "$t" "$family"
+      _grad_tmp[i]="${ESC}[38;2;${_GR};${_GG};${_GB}m"
     else
-      _grad_palette[i]="${ESC}[38;5;${_grad256_ramp[$((t * (${#_grad256_ramp[@]} - 1) / 10000))]}m"
+      _grad_tmp[i]="${ESC}[38;5;${r256[$((t * (${#r256[@]} - 1) / 10000))]}m"
     fi
   done
 }
-build_palette
+build_palette warm
+_grad_warm=("${_grad_tmp[@]}")
+build_palette ctx
+_grad_ctx=("${_grad_tmp[@]}")
+build_palette 7d
+_grad_7d=("${_grad_tmp[@]}")
 
-# render_bar <pct> <marker_pct|""> <proj_pct|""> <pip_count> <marker_color>
+# render_bar <pct> <marker_pct|""> <proj_pct|""> <pip_count> <marker_color> <class>
+# <class> is ctx | 7d | anything-else(=5h) and selects the row's fill glyph,
+# track glyph and gradient family. An unknown or empty class falls through to the
+# 5h pair, so a future caller that forgets it degrades to the shipped look rather
+# than rendering a bar with no fill.
 render_bar() {
-  local pct=$1 marker_pct=$2 proj_pct=$3 pip_count=$4 marker_color=$5
+  local pct=$1 marker_pct=$2 proj_pct=$3 pip_count=$4 marker_color=$5 class=$6
+  local fill_pip empty_pip
+  local -a pal
+  case "$class" in
+    ctx)
+      fill_pip=$PIP_FILL_CTX empty_pip=$PIP_EMPTY_CTX
+      pal=("${_grad_ctx[@]}")
+      ;;
+    7d)
+      fill_pip=$PIP_FILL_7D empty_pip=$PIP_EMPTY_7D
+      pal=("${_grad_7d[@]}")
+      ;;
+    *)
+      fill_pip=$PIP_FILL empty_pip=$PIP_EMPTY
+      pal=("${_grad_warm[@]}")
+      ;;
+  esac
   [ "$pct" -lt 0 ] && pct=0
   local filled=$((pct * pip_count / 100))
   [ "$filled" -gt "$pip_count" ] && filled=$pip_count
@@ -279,7 +381,7 @@ render_bar() {
 
   local out="" i pip gi
   for ((i = 0; i < pip_count; i++)); do
-    if [ "$i" -lt "$filled" ]; then pip=$PIP_FILL; else pip=$PIP_EMPTY; fi
+    if [ "$i" -lt "$filled" ]; then pip=$fill_pip; else pip=$empty_pip; fi
     if [ "$i" -eq "$marker_idx" ]; then
       if [ "$marker_expired" -eq 1 ]; then
         out="${out}${UNDIM}${RED}${PIP_MARKER}"
@@ -294,7 +396,7 @@ render_bar() {
       fi
     elif [ "$i" -lt "$filled" ]; then
       gi=$((i * (GRAD_N - 1) / (pip_count - 1)))
-      out="${out}${UNDIM}${_grad_palette[gi]}${pip}"
+      out="${out}${UNDIM}${pal[gi]}${pip}"
     else
       out="${out}${MUTED}${pip}"
     fi
@@ -1205,6 +1307,7 @@ fi
 # overhead — so the shared bar reserve can account for every bar line before any
 # is rendered.
 _win_lbl=() _win_pct=() _win_clock=() _win_proj=() _win_time=() _win_delta=() _win_extra=() _win_over=()
+_win_class=() _win_mkcol=()
 compute_window() {
   local pct_str=$1 resets_str=$2 window_min=$3 label=$4 extra_disp=$5 extra_plain=$6
   local pct
@@ -1239,6 +1342,15 @@ compute_window() {
     printf -v time_label '%dm' "$remain_min"
   fi
 
+  # Row class drives the bar's glyph pair and gradient family; the clock pip's
+  # color goes with it, since each pip is chosen to stay legible against its own
+  # ramp (see MARKER / MARKER_7D above).
+  local cls mkcol
+  case "$label" in
+    7d) cls=7d mkcol=$MARKER_7D ;;
+    *) cls=5h mkcol=$MARKER ;;
+  esac
+
   local n=${#_win_lbl[@]}
   _win_lbl[n]=$label
   _win_pct[n]=$pct
@@ -1247,6 +1359,8 @@ compute_window() {
   _win_time[n]=$time_label
   _win_delta[n]=$delta_disp
   _win_extra[n]=$extra_disp
+  _win_class[n]=$cls
+  _win_mkcol[n]=$mkcol
   _win_over[n]=$((WIN_FIXED + ${#time_label} + ${#delta_plain} + ${#extra_plain}))
 }
 
@@ -1265,7 +1379,7 @@ reserve=$((reserve + BAR_SAFETY))
 pip_count=$(pip_count_for_width "$cols" "$reserve")
 
 # Render Line 2 (CTX).
-ctx_bar=$(render_bar "$used_int" "$ac" "" "$pip_count" "$AUTOCOMPACT")
+ctx_bar=$(render_bar "$used_int" "$ac" "" "$pip_count" "$AUTOCOMPACT" ctx)
 printf -v ctx_lbl '%-3s' "CTX"
 printf -v ctx_pct '%3s' "$used_int"
 printf '%s%s%s %s %s%s%%%s%s%s\n' "$MUTED" "$ctx_lbl" "$RST" "$ctx_bar" "$ctx_pct_color" "$ctx_pct" "$RST" "$ctx_detail" "$ctx_warn"
@@ -1277,13 +1391,16 @@ if [ "$five_has_data" -eq 0 ]; then
   printf '%s%s%s %sno rate-limit data yet%s\n' "$MUTED" "$lbl" "$RST" "$MUTED" "$RST"
 fi
 render_window() {
-  local i=$1 bar lbl pctf
-  bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$MARKER")
+  local i=$1 bar lbl pctf mkcol
+  mkcol=${_win_mkcol[i]}
+  bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$mkcol" "${_win_class[i]}")
   printf -v lbl '%-3s' "${_win_lbl[i]}"
   printf -v pctf '%3s' "${_win_pct[i]}"
+  # The "time left" readout takes the row's own pip color, so the clock pip in
+  # the bar and the clock figure after it read as the same fact.
   printf '%s%s%s %s %s%s%%%s %s%s left%s [%s%s]%s%s\n' \
     "$MUTED" "$lbl" "$RST" "$bar" "$MUTED" "$pctf" "$RST" \
-    "$MARKER" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
+    "$mkcol" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
 }
 i=0
 while [ "$i" -lt "${#_win_lbl[@]}" ]; do
