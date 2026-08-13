@@ -46,14 +46,25 @@ SIG_BRANCH='@'   # branch    (evokes git @/HEAD)
 # it, leaving a window row with no fill glyph at all), and track-only identity
 # vanishes on a full one. Pairing them keeps every row legible at every level.
 # Fill is always the denser half of its pair, preserving the fill/track contrast
-# that makes a bar readable at all. Glyphs are chosen from what nothing else
-# claims: '# - | * !' are spoken for above, and '+ ^ v ? x @' on line 1.
+# that makes a bar readable at all.
+#
+# Glyph availability, stated precisely because the next person to add a row will
+# work from it: nothing here collides INSIDE a bar, where '# - | * !' are the only
+# spoken-for characters. Two of these do appear elsewhere on line 1, harmlessly —
+# '~' is the $HOME abbreviation in the title, and '.' is the '..' middle-ellipsis
+# marker on a truncated branch or model name. Different line, different context,
+# and no line-1 sigil ('+ ^ v ? x @') is reused here.
 PIP_FILL='#'      # 5h  fill  — solid band, the densest glyph in ASCII
 PIP_EMPTY='-'     # 5h  track — mid rule
 PIP_FILL_CTX='~'  # CTX fill  — wave, mid-height
 PIP_EMPTY_CTX='.' # CTX track — sparse dots
 PIP_FILL_7D=':'   # 7d  fill  — dotted band
-PIP_EMPTY_7D='_'  # 7d  track — baseline rule
+# 7d track — baseline rule. A long muted run of these resembles an underline, and
+# underline means "clickable" elsewhere in this statusline (OSC8 links open SGR 4).
+# Kept anyway: the resemblance needs text above the rule to actually mislead, links
+# only ever appear on line 1, and every remaining light glyph (',  '  `) is either
+# too faint to read as a track or too close to CTX's dots. Revisit if it confuses.
+PIP_EMPTY_7D='_'
 
 # ── Color capability ────────────────────────────────────────────────────────
 # Honor NO_COLOR (https://no-color.org) and dumb terminals; detect truecolor so
@@ -290,12 +301,24 @@ GRAD_N=24
 _grad_warm=() _grad_ctx=() _grad_7d=() _grad_tmp=()
 # 256-color fallbacks, one per family. NOT optional: without them every
 # non-truecolor terminal collapses all three families onto one ramp and the tier
-# system simply doesn't exist for those users. Each is ordered by increasing
-# brightness so the fill still reads as a level, and each ends on a tinted white
-# (230 #ffffd7 / 225 #ffd7ff / 195 #d7ffff) to mirror the truecolor terminus.
-_grad256_warm='60 66 96 132 168 203 202 208 214 220 230'
+# system simply doesn't exist for those users. Each ends on a tinted white
+# (230 #ffffd7 / 225 #ffd7ff / 195 #d7ffff) mirroring its truecolor terminus.
+#
+# All three open on 59 (#5f5f5f), so the shared grey origin holds here too and not
+# only in truecolor. 59 is also the closer cube approximation of the truecolor
+# origin (74,79,92) than the 60 (#5f5f87, blue-violet) this ramp used to start on
+# — squared distance 706 vs 2546.
+#
+# The two NEW families ascend monotonically in luminance, so the fill reads as a
+# level rather than dipping darker partway along; run.sh asserts it, because a
+# hand-picked index that breaks the run is invisible both to the ANSI-stripped
+# goldens and to the truecolor path. `warm` is exempt: past its origin it walks a
+# hue path (teal → magenta → red → amber) that dips at 96 and again at 202. Those
+# dips predate the per-row families, and flattening them would re-color the 5h row
+# on every non-truecolor terminal — a separate decision from this one.
+_grad256_warm='59 66 96 132 168 203 202 208 214 220 230'
 _grad256_ctx='59 60 97 98 134 135 141 177 183 189 225'
-_grad256_7d='59 60 68 74 75 81 111 117 153 159 195'
+_grad256_7d='59 60 68 74 75 81 117 153 159 195'
 # Fills _grad_tmp for one family; the caller copies it to that family's array.
 # (Bash 3.2 has no nested arrays and no namerefs, so a copy beats indirection.)
 build_palette() {
@@ -1396,11 +1419,14 @@ render_window() {
   bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$mkcol" "${_win_class[i]}")
   printf -v lbl '%-3s' "${_win_lbl[i]}"
   printf -v pctf '%3s' "${_win_pct[i]}"
-  # The "time left" readout takes the row's own pip color, so the clock pip in
-  # the bar and the clock figure after it read as the same fact.
+  # The "time left" readout stays MARKER blue on BOTH rows rather than taking the
+  # row's pip color. MARKER_7D is pink because pink survives against 7d's blue bar
+  # fill — a constraint that doesn't apply to text sitting on the terminal
+  # background, where it would instead land pink immediately beside the red/green
+  # [+N%] delta and blunt the delta's own color coding.
   printf '%s%s%s %s %s%s%%%s %s%s left%s [%s%s]%s%s\n' \
     "$MUTED" "$lbl" "$RST" "$bar" "$MUTED" "$pctf" "$RST" \
-    "$mkcol" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
+    "$MARKER" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
 }
 i=0
 while [ "$i" -lt "${#_win_lbl[@]}" ]; do
