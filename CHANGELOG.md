@@ -57,9 +57,22 @@ measures ΔE ≈ 73. The pip's *shape* still carries the meaning; its color is c
 you can find it.
 
 Non-truecolor terminals get three distinct 256-color ramps rather than one, or the tiers
-would not exist for those users at all. `run.sh` grew assertions for the glyph pairs, the
-three ramps, the 256-color fallbacks and the pip/ramp collision — the goldens are
-ANSI-stripped and catch the glyphs but are blind to every hue.
+would not exist for those users at all. All three open on index 59 (`#5f5f5f`) so the shared
+grey origin holds off truecolor too — `warm` used to open on 60 (`#5f5f87`, blue-violet),
+which made an empty 5h bar blue where the others were grey. The two new families also ascend
+monotonically in luminance, so the fill reads as a level instead of dipping darker partway
+along. `warm` still dips at 96 and 202; those dips predate this change and flattening them
+would re-color the 5h row on every non-truecolor terminal, so that stays a separate decision.
+
+One thing deliberately *not* recolored: the `time left` readout stays blue on both window
+rows. `MARKER_7D` is pink because pink survives against 7d's blue bar fill, but that
+constraint doesn't apply to text sitting on the terminal background — there it would land
+pink immediately beside the red/green `[+N%]` delta and blunt the delta's own coding.
+
+`run.sh` grew assertions for the glyph pairs, the glyphs surviving `NO_COLOR`, the shared
+grey origin in both color depths, each row's hue family, the pip/ramp collision, three
+distinct indexed ramps, and ramp luminance monotonicity — the goldens are ANSI-stripped, so
+they catch the glyphs and are blind to every hue.
 
 ## v1.1.3
 

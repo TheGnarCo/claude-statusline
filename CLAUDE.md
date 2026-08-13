@@ -129,7 +129,15 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
     why `MARKER_7D` is pink at ΔE ≈ 73. `run.sh` guards this specific regression.
   All three ramps share one grey origin and end in a white tinted toward their own hue, so a
   nearly empty bar is grey on every row. That is deliberate, and it is why the glyph pair —
-  not hue — is what actually distinguishes the rows.
+  not hue — is what actually distinguishes the rows. **The shared origin has to hold in both
+  color depths**: the 256-color fallbacks all open on index 59, and `run.sh` asserts it,
+  because opening `warm` on 60 (`#5f5f87`) instead made an empty 5h bar blue-violet while the
+  others were grey — true in truecolor, false everywhere else, and invisible to the goldens.
+- **Don't assert a per-row color by diffing rendered rows.** Each bar row's escape set also
+  carries that row's own pip color, and the rows render at different fill depths, so per-row
+  sets differ even when two families are the *same* ramp — an assertion written that way reads
+  green while the feature is gone. Compare the ramp constants read out of the source (see
+  `ramp_indices` in `run.sh`), and check rendering separately.
 - **Autocompact marker defaults to 80%.** The amber threshold cell / `N%->AC` headroom /
   `[AC]` chip assume autocompact fires at 80% of the context window. Override the marker
   with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) if a session's real threshold differs, or

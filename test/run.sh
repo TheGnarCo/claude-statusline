@@ -154,7 +154,8 @@ bar_line() { # bar_line <label> — the ANSI-stripped bar row for that label
 raw_line() { # raw_line <n> — bar row n (1=CTX, 2=5h, 3=7d) with escapes intact
   run_sl 120 "$P_SEVEN_BINDING" | sed -n "$((n_off + $1))p"
 }
-n_off=1 # line 1 is the identity row; the bars follow it
+n_off=1           # line 1 is the identity row; the bars follow it
+PIP_MARKER_CH='|' # must match PIP_MARKER in statusline.sh
 
 # Glyphs: every row must show its own pair, and NOT another row's fill.
 glyph_bad=0
@@ -188,18 +189,26 @@ assert "ramps: all families start from the shared grey origin" "$ramp_bad"
 # nothing about hue). Take the most saturated color on the row and name its
 # family by channel order: warm = R>=G>=B, purple = B>R>G, blue = B>G>R.
 #
-# Only colors appearing >=3 times count, which excludes the pips and the trailing
-# text (each appears at most twice) and leaves the bar fill — the thing under test.
+# The pip and threshold colors are excluded BY VALUE, leaving only bar fill. An
+# earlier version filtered on "appears >=3 times" instead, which happened to work
+# at COLUMNS=120 but silently depended on the bar being ~47+ cells wide: narrow the
+# pane and nothing qualifies, every row classifies as "none", and the assertion
+# fails blaming hue. Excluding known colors has no such hidden precondition.
 #
 # This needs a payload where all three bars are actually FULL: at 20% fill a bar
 # never leaves the shared grey origin, so a low-fill fixture cannot distinguish
 # the families and would assert nothing.
 P_FULL_BARS='{'"$DIR"',"context_window":{"used_percentage":100,"total_input_tokens":200000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'}}}'
-hue_family() { # hue_family <bar-row-n> — warm | purple | blue | none
+# MARKER, MARKER_7D, AUTOCOMPACT, PROJ — every non-fill color a bar row can emit.
+PIP_RGBS='96;200;255 255;95;175 255;128;0 255;210;80'
+# hue_family <bar-row-n> — prints warm | purple | blue | none
+hue_family() {
   run_sl 120 "$P_FULL_BARS" | sed -n "$((n_off + $1))p" |
-    grep -o '38;2;[0-9]*;[0-9]*;[0-9]*' | sed 's/38;2;//' | sort | uniq -c |
-    awk '$1 >= 3 {
-           split($2, c, ";"); r = c[1]; g = c[2]; b = c[3]
+    grep -o '38;2;[0-9]*;[0-9]*;[0-9]*' | sed 's/38;2;//' | sort -u |
+    awk -v pips="$PIP_RGBS" '
+         BEGIN { n = split(pips, p, " "); for (i = 1; i <= n; i++) skip[p[i]] = 1 }
+         !($0 in skip) {
+           split($0, c, ";"); r = c[1]; g = c[2]; b = c[3]
            mx = r; if (g > mx) mx = g; if (b > mx) mx = b
            mn = r; if (g < mn) mn = g; if (b < mn) mn = b
            if (mx - mn > best) { best = mx - mn; br = r; bg = g; bb = b }
@@ -218,33 +227,104 @@ hue_bad=0
 [ "$(hue_family 3)" = "blue" ] || hue_bad=1
 assert "ramps: CTX purple, 5h warm, 7d blue (classified from output)" "$hue_bad"
 
-# The clock pip must not collide with its own row's ramp. 7d is blue-ramped, so
-# its pip is pink (#ff5faf); reusing the 5h blue pip there measured dE ~6 against
-# the blue fill — near-invisible — and that is the regression this guards.
+# The clock pip must not collide with its own row's ramp. 7d is blue-ramped, so its
+# pip is pink (#ff5faf); reusing the 5h blue pip there measured dE ~6 against the
+# blue fill — near-invisible — and that is the regression this guards.
+#
+# Matched as "color escape immediately followed by the marker glyph", which tests
+# the PIP specifically. Scanning the whole row instead would be wrong now that the
+# "time left" text is deliberately MARKER blue on both rows: blue appears on the 7d
+# row legitimately, just never on its pip.
 five_raw=$(raw_line 2)
 seven_raw=$(raw_line 3)
 pip_bad=0
-case "$seven_raw" in *"${esc}[38;2;255;95;175m"*) ;; *) pip_bad=1 ;; esac
-case "$five_raw" in *"${esc}[38;2;96;200;255m"*) ;; *) pip_bad=1 ;; esac
-case "$seven_raw" in *"${esc}[38;2;96;200;255m"*) pip_bad=1 ;; esac
+printf '%s' "$seven_raw" | grep -qF "${esc}[38;2;255;95;175m${PIP_MARKER_CH}" || pip_bad=1
+printf '%s' "$five_raw" | grep -qF "${esc}[38;2;96;200;255m${PIP_MARKER_CH}" || pip_bad=1
+printf '%s' "$seven_raw" | grep -qF "${esc}[38;2;96;200;255m${PIP_MARKER_CH}" && pip_bad=1
 assert "pips: 7d clock is pink, 5h clock is blue, neither leaks" "$pip_bad"
 
 # 256-color: three distinct indexed ramps, or the tier system vanishes for every
-# non-truecolor terminal. Compare the per-row index sets.
-idx_of() { # idx_of <n> — sorted unique 256-color indices on bar row n
+# non-truecolor terminal. Read the ramps from source rather than diffing the
+# rendered index sets per row.
+#
+# Diffing rendered rows looks stronger but does not discriminate at all: each row's
+# set also carries that row's own pip index (208 amber / 39 blue / 205 pink) and the
+# rows render at different fill depths, so the sets differ even when all three
+# families are literally the same ramp. Verified — pointing ctx and 7d at the warm
+# indices left that version of this assertion green, so the path the comment above
+# calls "NOT optional" was in fact unguarded.
+ramp_indices() { sed -n "s/^_grad256_$1='\([^']*\)'.*/\1/p" "$SCRIPT"; }
+r_warm=$(ramp_indices warm)
+r_ctx=$(ramp_indices ctx)
+r_7d=$(ramp_indices 7d)
+idx_bad=0
+[ -z "$r_warm" ] && idx_bad=1
+[ -z "$r_ctx" ] && idx_bad=1
+[ -z "$r_7d" ] && idx_bad=1
+[ "$r_warm" = "$r_ctx" ] && idx_bad=1
+[ "$r_warm" = "$r_7d" ] && idx_bad=1
+[ "$r_ctx" = "$r_7d" ] && idx_bad=1
+assert "256-color: three distinct indexed ramps, one per family" "$idx_bad"
+
+# ...and each row must actually RENDER indexed colors, which the source-level check
+# above deliberately says nothing about.
+idx_rendered() { # idx_rendered <n> — 256-color indices on bar row n
   COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color NO_COLOR='' \
     OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_SEVEN_BINDING" |
     sed -n "$((n_off + $1))p" | grep -o '38;5;[0-9]*' | sed 's/38;5;//' | sort -un | tr '\n' ' '
 }
-i_ctx=$(idx_of 1)
-i_five=$(idx_of 2)
-i_seven=$(idx_of 3)
-idx_bad=0
-[ -z "$i_ctx" ] && idx_bad=1
-[ "$i_ctx" = "$i_five" ] && idx_bad=1
-[ "$i_ctx" = "$i_seven" ] && idx_bad=1
-[ "$i_five" = "$i_seven" ] && idx_bad=1
-assert "256-color: three distinct indexed ramps, one per row" "$idx_bad"
+render_bad=0
+for _n in 1 2 3; do
+  [ -n "$(idx_rendered "$_n")" ] || render_bad=1
+done
+assert "256-color: every bar row renders indexed colors" "$render_bad"
+
+# All three families open on the SAME index, so the shared grey origin holds off
+# truecolor too. This was false when warm opened on 60 (#5f5f87, blue-violet) while
+# the new families opened on 59 (#5f5f5f) — an empty 5h bar was blue where the
+# others were grey, contradicting the comments, CLAUDE.md and the README.
+o_warm=${r_warm%% *}
+o_ctx=${r_ctx%% *}
+o_7d=${r_7d%% *}
+origin_bad=0
+[ "$o_warm" = "$o_ctx" ] || origin_bad=1
+[ "$o_warm" = "$o_7d" ] || origin_bad=1
+assert "256-color: all families share one grey origin index" "$origin_bad"
+
+# A hand-picked index that dips *darker* partway along its ramp makes the fill stop
+# reading as a level, and nothing else catches it: the goldens are ANSI-stripped and
+# the truecolor path uses entirely different values. Resolve each index through the
+# xterm-256 color cube and assert luminance never decreases.
+#
+# `warm` is exempt: past its origin it walks a hue path (teal → magenta → red →
+# amber) that dips at 96 and again at 202, predating the per-row families.
+ramp_monotonic() { # 0 when luminance never decreases across the ramp
+  printf '%s\n' "$1" | awk '
+    function lin(c) { c = c / 255; return (c <= 0.03928) ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4 }
+    function lum(r, g, b) { return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) }
+    BEGIN { split("0 95 135 175 215 255", L, " "); bad = 1 }
+    {
+      bad = 0
+      prev = -1
+      for (i = 1; i <= NF; i++) {
+        x = $i + 0 # force numeric: a stray token would otherwise compare as a string
+        if (x < 16 || x > 255) { bad = 1; break } # ramps use the cube, not system colors
+        if (x >= 232) { v = 8 + (x - 232) * 10; r = v; g = v; b = v } else {
+          n = x - 16
+          r = L[int(n / 36) + 1]; g = L[int(n / 6) % 6 + 1]; b = L[n % 6 + 1]
+        }
+        cur = lum(r, g, b)
+        if (cur < prev - 0.000000001) bad = 1
+        prev = cur
+      }
+    }
+    END { exit bad }
+  '
+}
+mono_bad=0
+ramp_monotonic "$r_ctx" || mono_bad=1
+ramp_monotonic "$r_7d" || mono_bad=1
+assert "256-color: new ramps ascend in luminance (no dark dip mid-bar)" "$mono_bad"
 
 # ── Width discipline: no line may exceed COLUMNS ─────────────────────────────
 # The bars stretch to fill the row, so the width math must reserve room for each
