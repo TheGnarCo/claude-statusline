@@ -139,8 +139,9 @@ DEFAULT_PIP_COUNT=30 # fallback when the terminal width is unknown
 # where the *_FIXED constants count the non-bar, non-trailing cols — the label,
 # the spaces around the bar, the pct field + '%', and each line's fixed literals
 # (" left [ ]" on the window lines).
+HEADROOM_NEAR=20 # show N%->AC only within this many points of autocompact
 CTX_FIXED=9
-WIN_FIXED=18
+WIN_FIXED=13
 BAR_SAFETY=1     # leave one blank col at the right edge of the widest bar line
 MIN_PIP_COUNT=12 # keep the bar readable on a narrow pane (and >1 for the gradient divisor)
 
@@ -1136,9 +1137,17 @@ show_model=0
 if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
   show_model=1
 fi
+# The extended-window flag is the same fact the CTX row already carries in its
+# "420k/1M" readout, so it is shown only when that readout will NOT spell it out
+# (no token count, or no window size). The invariant the flag was added for holds:
+# the indicator is never silently dropped, it just stops being said twice.
+ctx_flag_disp=$ctx_flag
+if [ "$ctx_input_tokens" -gt 0 ] && [ "$ctx_window_size" -gt 0 ]; then
+  ctx_flag_disp=""
+fi
 if [ "$show_model" -eq 1 ]; then
   gadd "${CYAN}${model_short}${RST}" "$model_short"
-  gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
+  gadd "${YELLOW}${ctx_flag_disp}${RST}" "$ctx_flag_disp"
   gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
 fi
 # Capped ONLY when it actually leads the group — i.e. every cell ahead of it is
@@ -1146,7 +1155,7 @@ fi
 # to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
 # showed it whole); the first-member rule that justifies a cap simply did not apply.
 style_txt=$output_style
-if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ]; then
+if [ -z "$model_short" ] && [ -z "$ctx_flag_disp" ] && [ -z "$effort_cap" ]; then
   style_txt=$(trunc_mid "$output_style" "$branch_max")
 fi
 [ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
@@ -1155,7 +1164,7 @@ fi
 money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
   if (c ~ /^[0-9]+(\.[0-9]+)?$/) {
     printf "$%.2f", c
-    if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
+    if (c+0 > 0 && d+0 >= 60000) printf " $%.2f/h", (c+0) / ((d+0)/3600000.0)
   }
 }')
 # The cost cell can still be the group's FIRST member (a payload with a cost and
@@ -1187,7 +1196,7 @@ money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
 # into 19), which is the very case the check exists for.
 if [ -n "$cols" ] && [ -n "$money" ]; then
   case "$money" in
-    *' ('*)
+    *'/h'*)
       _rw=${#title_txt} # title_len is not assigned until the packer, below
       for ((_ri = 0; _ri < ${#seg_len[@]}; _ri++)); do _rw=$((_rw + seg_len[_ri])); done
       # The space after the title, which the packer adds before the FIRST group —
@@ -1202,10 +1211,10 @@ if [ -n "$cols" ] && [ -n "$money" ]; then
       [ "${#_gm_plain[@]}" -gt 0 ] && _gw=$((_gw + 1)) # separator before the cost
       _rw=$((_rw + 2 + _gw + ${#money}))               # this group's own brackets
       case "$telem_state" in
-        tagged) _rw=$((_rw + 11)) ;;
+        tagged) _rw=$((_rw + 7)) ;;
         untagged) _rw=$((_rw + 14)) ;;
       esac
-      [ "$_rw" -gt "$cols" ] && money=${money%% (*}
+      [ "$_rw" -gt "$cols" ] && money=${money%% *}
       ;;
   esac
 fi
@@ -1233,7 +1242,7 @@ gflush
 # make room for a cell that rarely changes. Trailing, it's the first thing to spill.
 # CLAUDE_STATUSLINE_HIDE_TELEM=1 drops it entirely.
 case "$telem_state" in
-  tagged) gadd "${TELEM_ON}$(osc8 "$TELEM_URL" 'telem tag')${RST}" 'telem tag' ;;
+  tagged) gadd "${TELEM_ON}$(osc8 "$TELEM_URL" 'telem')${RST}" 'telem' ;;
   untagged) gadd "${TELEM_OFF}$(osc8 "$TELEM_URL" 'no telem tag')${RST}" 'no telem tag' ;;
 esac
 gflush
@@ -1297,8 +1306,13 @@ if [ "$used_int" -ge "$ac" ]; then
   ctx_warn_plain=" [AC]"
 else
   [ "$used_int" -ge $((ac - 15)) ] && ctx_pct_color=$YELLOW
-  ctx_detail="${ctx_detail} ${MUTED}$((ac - used_int))%->AC${RST}"
-  ctx_detail_plain="${ctx_detail_plain} $((ac - used_int))%->AC"
+  # Headroom is a countdown, so it only speaks once it is worth counting: inside
+  # HEADROOM_NEAR points of the threshold. Further out the amber cell on the bar
+  # already shows where autocompact sits, and "38%->AC" was 8 columns restating it.
+  if [ "$used_int" -ge $((ac - HEADROOM_NEAR)) ]; then
+    ctx_detail="${ctx_detail} ${MUTED}$((ac - used_int))%->AC${RST}"
+    ctx_detail_plain="${ctx_detail_plain} $((ac - used_int))%->AC"
+  fi
 fi
 if [ -n "$exceeds_200k" ]; then
   ctx_warn="${ctx_warn} ${MUTED}[${BOLD}${RED}200k+${RST}${MUTED}]${RST}"
@@ -1358,9 +1372,9 @@ compute_window() {
   # Time remaining, framed as "… left" (no leading '-', which read as negative).
   local time_label
   if [ "$remain_min" -ge 1440 ]; then
-    printf -v time_label '%dd %dh' "$((remain_min / 1440))" "$(((remain_min % 1440) / 60))"
+    printf -v time_label '%dd%dh' "$((remain_min / 1440))" "$(((remain_min % 1440) / 60))"
   elif [ "$remain_min" -ge 60 ]; then
-    printf -v time_label '%dh %dm' "$((remain_min / 60))" "$((remain_min % 60))"
+    printf -v time_label '%dh%dm' "$((remain_min / 60))" "$((remain_min % 60))"
   else
     printf -v time_label '%dm' "$remain_min"
   fi
@@ -1424,7 +1438,7 @@ render_window() {
   # fill — a constraint that doesn't apply to text sitting on the terminal
   # background, where it would instead land pink immediately beside the red/green
   # [+N%] delta and blunt the delta's own color coding.
-  printf '%s%s%s %s %s%s%%%s %s%s left%s [%s%s]%s%s\n' \
+  printf '%s%s%s %s %s%s%%%s %s%s%s [%s%s]%s%s\n' \
     "$MUTED" "$lbl" "$RST" "$bar" "$MUTED" "$pctf" "$RST" \
     "$MARKER" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
 }

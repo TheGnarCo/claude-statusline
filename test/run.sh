@@ -699,7 +699,7 @@ assert "title: non-GitHub SSH remote yields no owner" "$c"
 git remote remove origin 2> /dev/null
 
 # ── Telemetry-tag chip (git) ─────────────────────────────────────────────────
-# The chip reads [telem tag] when the repo carries a project.name OTEL attribute and
+# The chip reads [telem] when the repo carries a project.name OTEL attribute and
 # [no telem tag] when it doesn't (so its usage lands in the dashboard as
 # "(untagged)"). Detection mirrors the toolkit SessionStart hook, and every input it
 # reads is asserted here — live env, the repo's checked-in settings, its local
@@ -721,9 +721,9 @@ chip_is() {
   local out
   out=$(run_sl 120 "$P_TELEM" | strip_ansi)
   case "$1:$out" in
-    'tagged:'*'[telem tag]'*) return 0 ;;
+    'tagged:'*'[telem]'*) return 0 ;;
     'untagged:'*'[no telem tag]'*) return 0 ;;
-    'none:'*'telem tag'*) return 1 ;;
+    'none:'*'telem'*) return 1 ;;
     'none:'*) return 0 ;;
   esac
   return 1
@@ -736,7 +736,7 @@ mkdir -p "$TELEMREPO/.claude"
 TAG='{"env":{"OTEL_RESOURCE_ATTRIBUTES":"project.name=org/repo"}}'
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
 chip_is tagged
-assert "telem: [telem tag] when .claude/settings.json carries project.name" "$?"
+assert "telem: [telem] when .claude/settings.json carries project.name" "$?"
 
 printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.json"
 chip_is untagged
@@ -744,7 +744,7 @@ assert "telem: settings.json without project.name still counts as untagged" "$?"
 
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
 chip_is tagged
-assert "telem: [telem tag] when settings.local.json carries project.name" "$?"
+assert "telem: [telem] when settings.local.json carries project.name" "$?"
 
 # Claude Code merges settings.local.json OVER settings.json, so a local override
 # that replaces the attribute without a project.name really is untagged — the chip
@@ -793,12 +793,12 @@ assert "telem: chip links to the dashboard in both states" "$c"
 # Claude Code, which exports the attribute from settings into the statusline's env.
 out_tagged=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
   OTEL_RESOURCE_ATTRIBUTES='project.name=org/repo' bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_tagged" in *'[telem tag]'*) c=0 ;; *) c=1 ;; esac
-assert "telem: [telem tag] when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
+case "$out_tagged" in *'[telem]'*) c=0 ;; *) c=1 ;; esac
+assert "telem: [telem] when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
 
 out_optout=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
   CLAUDE_STATUSLINE_HIDE_TELEM=1 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_optout" in *'telem tag'*) c=1 ;; *) c=0 ;; esac
+case "$out_optout" in *'telem'*) c=1 ;; *) c=0 ;; esac
 assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=1 suppresses the chip" "$c"
 
 # ...and =0 means SHOW. A bare -n test read any value as "hide", so the one spelling
@@ -893,7 +893,7 @@ P_CFG_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context
 # at the end of its bracket — so isolate the config bracket (the one carrying the
 # model name) and test that.
 cfg_lost=0 cfg_shed_seen=0
-for w in 40 44 48 52 56 60; do
+for w in 32 36 40 44 48 52 56 60; do
   out=$(run_sl "$w" "$P_CFG_SHED" | strip_ansi | line1_block)
   cfg=$(printf '%s\n' "$out" | tr ']' '\n' | grep 'Claude' | tail -1)
   case "$cfg" in *' ..') ;; *) continue ;; esac # only widths where CONFIG sheds
@@ -935,17 +935,17 @@ assert "config group: a style that fits is not ellipsized" "$c"
 # the boundary from both sides: at the width where the row fits it exactly it must
 # survive (an off-by-one here silently costs the cell every time), and one column
 # narrower it must be the BURN that goes — not the total, and not by wrapping.
-# Match on the '/h)' suffix, not the figure — a literal '$7...' trips SC2016.
+# Match on the '/h' suffix, not the figure — a literal '$7...' trips SC2016.
 # Non-git dir: the boundary width is a property of THIS row, and a git group +
 # telem chip would move it.
 cd "$NONGIT" || exit 2
 P_COST_EXACT='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
-out=$(run_sl 34 "$P_COST_EXACT" | strip_ansi | line1_block)
-case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
+out=$(run_sl 32 "$P_COST_EXACT" | strip_ansi | line1_block)
+case "$out" in *'/h'*) c=0 ;; *) c=1 ;; esac
 assert "cost: a row that fits the burn exactly keeps it" "$c"
 
-out=$(run_sl 33 "$P_COST_EXACT" | strip_ansi | line1_block)
-case "$out" in *'/h)'*) c=1 ;; *'12.34'*) c=0 ;; *) c=1 ;; esac
+out=$(run_sl 31 "$P_COST_EXACT" | strip_ansi | line1_block)
+case "$out" in *'/h'*) c=1 ;; *'12.34'*) c=0 ;; *) c=1 ;; esac
 assert "cost: one column narrower sheds the burn, not the total" "$c"
 case "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" in 1) c=0 ;; *) c=1 ;; esac
 assert "cost: shedding the burn keeps line 1 unwrapped" "$c"
