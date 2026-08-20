@@ -49,10 +49,20 @@ blank. Each group drops out entirely when it has nothing to say.
   `+`staged `?`untracked `*`stash — and finally this session's churn `+N/-M`.
 - **config** — model (cyan), reasoning effort (green, as `Lo`/`Med`/`Hi`/`XHi`/`Max`
   — you read it against the other tiers, not as a word), and output style
-  (magenta), which appears only when a **non-default** style is set.
+  (magenta), which appears only when a **non-default** style is set. Two chips
+  join it when they have something to say and are absent otherwise: **`Fast`**
+  (cyan) when [fast mode](https://code.claude.com/docs/en/fast-mode) is on, and
+  **`NoThink`** (yellow) when extended thinking is *explicitly* disabled — an
+  absent `thinking` block means Claude Code didn't say, which is not the same as
+  off and doesn't render as if it were.
 - **update** — `↑2.1.240` (yellow) when a newer Claude Code exists. Absent when
   you're current, which is almost always. See [Update check](#update-check).
-- **spend** — total cost and per-hour burn (green).
+- **spend** — total cost and per-hour burn (green), plus **`api N%`**: the share
+  of this session spent blocked on the API, from the two duration fields Claude
+  Code reports. It needs a minute of session before it means anything, so a fresh
+  session shows nothing, and it's clamped at 100% because the two clocks are
+  measured independently and can disagree at the margin. It's a nice-to-have, so
+  it sheds with the burn rate and never outlives it.
 
 When the pane narrows, the row sheds cheapest-loss-first: the derived burn rate,
 then the output style, then this session's churn, then the worktree suffix, then
