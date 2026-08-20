@@ -33,7 +33,15 @@ assert() {
 }
 
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
-run() { printf '%s' "$1" | bash "$SCRIPT" 2> /dev/null; }
+run() {
+  printf '%s' "$1" | env COLORTERM=truecolor TERM=xterm-256color NO_COLOR='' \
+    bash "$SCRIPT" 2> /dev/null
+}
+run_env() { # run_env <payload> <env assignments...>
+  local payload=$1
+  shift
+  printf '%s' "$payload" | env "$@" bash "$SCRIPT" 2> /dev/null
+}
 
 NOW=$(date +%s)
 ms() { echo $(((NOW - $1) * 1000)); }
@@ -101,6 +109,49 @@ case "$narrow" in *'m0'[0-9]'s'*) c=1 ;; *) c=0 ;; esac
 assert "width: elapsed compacts on a narrow panel" "$c"
 case "$narrow" in *'opus-5'*) c=1 ;; *) c=0 ;; esac
 assert "width: the model drops on a narrow panel" "$c"
+
+# ── Colour ───────────────────────────────────────────────────────────────────
+# The agent panel and the main panel are one visual system, so they must resolve
+# colour the same way and land on the same values. Hardcoded escapes here would
+# drift from statusline.sh silently — nothing else would ever catch it.
+
+# THE cross-script assertion: the context purple must be byte-identical to the
+# main statusline's CTX_HUE, read out of that file rather than restated here.
+# shellcheck disable=SC2016  # ${ESC} is literal text in statusline.sh, not an expansion
+CTX_HUE_TRUE=$(sed -n 's/.*CTX_HUE="\${ESC}\(\[38;2;[0-9;]*m\)".*/\1/p' statusline.sh | head -1)
+assert "colour: statusline.sh still defines a truecolor CTX_HUE" \
+  "$([ -n "$CTX_HUE_TRUE" ] && echo 0 || echo 1)"
+truecolor_out=$(run_env "$FULL" COLORTERM=truecolor TERM=xterm-256color NO_COLOR='')
+truecolor_content=$(printf '%s' "$truecolor_out" | jq -r '.content')
+case "$truecolor_content" in *"$(printf '\033')$CTX_HUE_TRUE"*) c=0 ;; *) c=1 ;; esac
+assert "colour: the context bar uses the main statusline's exact purple" "$c"
+
+# 256-colour fallback, same trigger as the main panel: no COLORTERM.
+out256=$(run_env "$FULL" COLORTERM='' TERM=xterm-256color NO_COLOR='' | jq -r '.content')
+case "$out256" in *$'\033[38;2;'*) c=1 ;; *) c=0 ;; esac
+assert "colour: no truecolor escapes without COLORTERM" "$c"
+case "$out256" in *$'\033[38;5;'*) c=0 ;; *) c=1 ;; esac
+assert "colour: falls back to the indexed ramp" "$c"
+
+# NO_COLOR was ignored entirely before this — the panel drew colour regardless.
+nocolor=$(run_env "$FULL" NO_COLOR=1 COLORTERM=truecolor TERM=xterm-256color)
+plain_nc=$(printf '%s' "$nocolor" | jq -r '.content')
+case "$plain_nc" in *$'\033['*) c=1 ;; *) c=0 ;; esac
+assert "colour: NO_COLOR emits no ANSI at all" "$c"
+# ...and the rows still say everything they said, since the marks carry it.
+c=1
+case "$plain_nc" in *'Explore'*) case "$plain_nc" in *'▒'*) case "$plain_nc" in *'42k'*) c=0 ;; esac ;; esac ;; esac
+assert "colour: NO_COLOR keeps the name, the bar and the count" "$c"
+
+dumb=$(run_env "$FULL" TERM=dumb COLORTERM=truecolor NO_COLOR='' | jq -r '.content')
+case "$dumb" in *$'\033['*) c=1 ;; *) c=0 ;; esac
+assert "colour: TERM=dumb emits no ANSI either" "$c"
+
+# Colour must never change the content, only its presentation.
+strip_a=$(printf '%s' "$truecolor_content" | strip_ansi)
+strip_b=$plain_nc
+assert "colour: the row text is identical with and without colour" \
+  "$([ "$strip_a" = "$strip_b" ] && echo 0 || echo 1)"
 
 # ── Degradation: emit NOTHING, never empty content ──────────────────────────
 # An empty content string hides a row, so every one of these must produce no

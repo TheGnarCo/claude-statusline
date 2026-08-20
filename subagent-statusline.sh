@@ -34,6 +34,32 @@
 
 set -euo pipefail
 
+# ── Colour, decided exactly as the main statusline decides it ───────────────
+# Same three rules: honour NO_COLOR, treat TERM=dumb as no colour, and use the
+# 24-bit ramp only when COLORTERM says so. Previously these were hardcoded, which
+# meant the agent panel ignored NO_COLOR and drew a 256-colour purple while the
+# main panel drew a truecolor one — the same meter, two different colours.
+ESC=$(printf '\033')
+USE_COLOR=1
+[ -n "${NO_COLOR:-}" ] && USE_COLOR=0
+[ "${TERM:-}" = "dumb" ] && USE_COLOR=0
+TRUECOLOR=0
+case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
+
+if [ "$USE_COLOR" -eq 0 ]; then
+  C_RST="" C_BOLD="" C_MUTED="" C_CTX="" C_RED=""
+else
+  C_RST="${ESC}[0m"
+  C_BOLD="${ESC}[1m"
+  C_MUTED="${ESC}[90m"
+  C_RED="${ESC}[31m"
+  if [ "$TRUECOLOR" -eq 1 ]; then
+    C_CTX="${ESC}[38;2;158;86;224m" # the panel's context purple, exactly
+  else
+    C_CTX="${ESC}[38;5;141m"
+  fi
+fi
+
 # No jq, or input that isn't an object: emit nothing, which leaves every row on
 # Claude Code's default rendering. Emitting empty content would hide them all.
 command -v jq > /dev/null 2>&1 || exit 0
@@ -41,12 +67,14 @@ command -v jq > /dev/null 2>&1 || exit 0
 input=$(cat)
 printf '%s' "$input" | jq -e 'type == "object"' > /dev/null 2>&1 || exit 0
 
-printf '%s' "$input" | jq -c -r --arg esc "$(printf '\033')" '
-  def rst: $esc + "[0m";
-  def bold: $esc + "[1m";
-  def muted: $esc + "[90m";
-  def purple: $esc + "[38;5;141m";
-  def red: $esc + "[31m";
+printf '%s' "$input" | jq -c -r \
+  --arg rst "$C_RST" --arg bold "$C_BOLD" --arg muted "$C_MUTED" \
+  --arg ctx "$C_CTX" --arg red "$C_RED" '
+  def rst: $rst;
+  def bold: $bold;
+  def muted: $muted;
+  def purple: $ctx;
+  def red: $red;
 
   def pad2: tostring | if length < 2 then "0" + . else . end;
 
