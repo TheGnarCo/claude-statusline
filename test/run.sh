@@ -736,6 +736,63 @@ assert "update: a failed check renders no chip" "$c"
 
 rm -rf "$UPD"
 
+# ── Fields that were on stdin all along ─────────────────────────────────────
+# fast_mode, thinking.enabled and cost.total_api_duration_ms. All three are
+# silent in their normal state, which is what earns them a column.
+P_FAST='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"fast_mode":true}'
+case "$(run_sl 120 "$P_FAST" | strip_ansi | sed -n 2p)" in *'Fast'*) c=0 ;; *) c=1 ;; esac
+assert "fields: fast_mode raises a Fast chip" "$c"
+P_SLOW=${P_FAST/\"fast_mode\":true/\"fast_mode\":false}
+case "$(run_sl 120 "$P_SLOW" | strip_ansi | sed -n 2p)" in *'Fast'*) c=1 ;; *) c=0 ;; esac
+assert "fields: fast_mode false raises nothing" "$c"
+case "$(run_sl 120 "$P_NORMAL" | strip_ansi | sed -n 2p)" in *'Fast'*) c=1 ;; *) c=0 ;; esac
+assert "fields: an absent fast_mode raises nothing" "$c"
+
+# Thinking: only ever rendered when EXPLICITLY off. Absent means "Claude Code did
+# not say", which is not the same as disabled and must not look like it.
+P_NOTHINK='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"thinking":{"enabled":false}}'
+case "$(run_sl 120 "$P_NOTHINK" | strip_ansi | sed -n 2p)" in *'NoThink'*) c=0 ;; *) c=1 ;; esac
+assert "fields: thinking disabled raises a NoThink chip" "$c"
+P_THINK=${P_NOTHINK/\"enabled\":false/\"enabled\":true}
+case "$(run_sl 120 "$P_THINK" | strip_ansi | sed -n 2p)" in *'NoThink'*) c=1 ;; *) c=0 ;; esac
+assert "fields: thinking enabled raises nothing" "$c"
+case "$(run_sl 120 "$P_NORMAL" | strip_ansi | sed -n 2p)" in *'NoThink'*) c=1 ;; *) c=0 ;; esac
+assert "fields: an absent thinking block raises nothing" "$c"
+
+# Wait ratio: api time over session time.
+P_API='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_api_duration_ms":300000}}'
+case "$(run_sl 140 "$P_API" | strip_ansi | sed -n 2p)" in *'api 50%'*) c=0 ;; *) c=1 ;; esac
+assert "fields: the API wait ratio renders" "$c"
+# Gated on a minute of session, so a fresh one cannot report a wild ratio off a
+# few hundred milliseconds.
+P_API_YOUNG=${P_API/\"total_duration_ms\":600000/\"total_duration_ms\":5000}
+case "$(run_sl 140 "$P_API_YOUNG" | strip_ansi | sed -n 2p)" in *'api '*) c=1 ;; *) c=0 ;; esac
+assert "fields: a session under a minute reports no ratio" "$c"
+# The two clocks are measured independently, so the ratio is clamped.
+P_API_OVER=${P_API/\"total_api_duration_ms\":300000/\"total_api_duration_ms\":9000000}
+case "$(run_sl 140 "$P_API_OVER" | strip_ansi | sed -n 2p)" in *'api 100%'*) c=0 ;; *) c=1 ;; esac
+assert "fields: a ratio over 100% is clamped, not printed raw" "$c"
+# It is a nice-to-have, so it must never outlive the burn rate it sits beside.
+# Asserted as an ordering across a sweep rather than at one width: which width
+# first sheds depends on the payload, and pinning a number here would only test
+# the fixture.
+api_outlived=0 api_shed_seen=0
+for w in 30 34 38 42 46 50 54 58 62 66 70; do
+  line=$(run_sl "$w" "$P_API" | strip_ansi | sed -n 2p)
+  case "$line" in *'/h'*) continue ;; esac
+  api_shed_seen=1
+  case "$line" in *'api '*) api_outlived=1 ;; esac
+done
+assert "fields: a width where the burn sheds was exercised" "$((1 - api_shed_seen))"
+assert "fields: the ratio never outlives the burn rate" "$api_outlived"
+
+# None of the three may disturb the frame.
+fb=""
+for _p in "$P_FAST" "$P_NOTHINK" "$P_API"; do
+  while IFS= read -r _len; do [ "$_len" -eq 112 ] || fb=1; done <<< "$(run_sl 120 "$_p" | strip_ansi | vislen)"
+done
+assert "fields: none of the new cells disturb the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
+
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
   OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
