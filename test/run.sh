@@ -793,6 +793,82 @@ for _p in "$P_FAST" "$P_NOTHINK" "$P_API"; do
 done
 assert "fields: none of the new cells disturb the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
 
+# ── Self-update chip ─────────────────────────────────────────────────────────
+# "There is a newer claude-statusline" in the top rule, beside coverage. This is
+# the cell plugin users depend on: `/gnar-statusline` COPIES the released scripts
+# into ~/.claude/, so a published release reaches them only when they re-run that
+# command, and nothing else tells them a release happened.
+#
+# Every case pre-seeds the cache, so the suite makes no network request.
+# Inside a repo: the coverage tag only renders in a working tree, and these
+# assertions are about the chip sitting BESIDE it.
+cd "$TELEMREPO" || exit 2
+SELF=$(mktemp -d)
+mkdir -p "$SELF/claude-statusline"
+P_SELF='{"session_id":"self-1","workspace":{"current_dir":"/work/proj/x","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+seed_release() { printf '%s\n%s' "$(date +%s)" "$1" > "$SELF/claude-statusline/self-1-release"; }
+# Claim the Claude Code slot too, so that check never fires a request either.
+printf '%s\n' "$(date +%s)" > "$SELF/claude-statusline/self-1-version"
+rule_of() { run_cached "$SELF" "$P_SELF" CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | sed -n 1p; }
+
+# The version the script reports for itself.
+SELF_VER=$(sed -n "s/^STATUSLINE_VERSION='\([0-9.]*\)'.*/\1/p" "$SCRIPT" | head -1)
+assert "self-update: statusline.sh declares a version" \
+  "$([ -n "$SELF_VER" ] && echo 0 || echo 1)"
+
+# **The drift guard.** A release that bumps CHANGELOG.md but forgets this constant
+# would ship a statusline that reports itself as current forever — the exact
+# silent-staleness this chip exists to prevent. Fail CI instead.
+CL_VER=$(sed -n 's/^## v\([0-9][0-9.]*\)$/\1/p' "$ROOT/CHANGELOG.md" | head -1)
+if [ -n "$CL_VER" ] && [ "$SELF_VER" = "$CL_VER" ]; then
+  c=0
+else
+  printf 'version drift: statusline.sh=%s CHANGELOG.md=%s\n' "$SELF_VER" "$CL_VER"
+  c=1
+fi
+assert "self-update: the version matches the newest CHANGELOG heading" "$c"
+
+seed_release "99.0.0"
+case "$(rule_of)" in *'update v99.0.0'*) c=0 ;; *) c=1 ;; esac
+assert "self-update: a newer release raises the chip in the top rule" "$c"
+# ...beside coverage, not instead of it.
+case "$(rule_of)" in *'update v99.0.0'*'tagged'*) c=0 ;; *) c=1 ;; esac
+assert "self-update: the chip sits beside the coverage tag" "$c"
+
+seed_release "$SELF_VER"
+case "$(rule_of)" in *'update v'*) c=1 ;; *) c=0 ;; esac
+assert "self-update: the current release raises no chip" "$c"
+seed_release "0.0.1"
+case "$(rule_of)" in *'update v'*) c=1 ;; *) c=0 ;; esac
+assert "self-update: an older release raises no chip" "$c"
+
+# GitHub tag names carry a leading v; the comparison must not see it as junk.
+printf '%s\n%s' "$(date +%s)" "v99.0.0" > "$SELF/claude-statusline/self-1-release"
+case "$(rule_of)" in *'update v99.0.0'*) c=0 ;; *) c=1 ;; esac
+assert "self-update: a vX.Y.Z tag name compares correctly" "$c"
+
+# The chip sheds before the repo name is squeezed: a name truncated to make room
+# for "there is a newer version" is a bad trade.
+seed_release "99.0.0"
+narrow_rule=$(run_cached "$SELF" "$P_SELF" COLUMNS=56 CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | sed -n 1p)
+case "$narrow_rule" in *'update v'*) c=1 ;; *) c=0 ;; esac
+assert "self-update: the chip sheds on a narrow pane" "$c"
+case "$narrow_rule" in *'tagged'*) c=0 ;; *) c=1 ;; esac
+assert "self-update: ...and coverage survives it" "$c"
+
+# Geometry, with the chip present.
+seed_release "99.0.0"
+sb=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || sb=1; done <<< "$(run_cached "$SELF" "$P_SELF" CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | vislen)"
+assert "self-update: the chip leaves the geometry intact" "$([ -z "$sb" ] && echo 0 || echo 1)"
+
+# Opt-out silences both checks.
+case "$(run_cached "$SELF" "$P_SELF" | strip_ansi | sed -n 1p)" in *'update v'*) c=1 ;; *) c=0 ;; esac
+assert "self-update: CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 silences it" "$c"
+
+rm -rf "$SELF"
+cd "$NONGIT" || exit 2
+
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
   OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
