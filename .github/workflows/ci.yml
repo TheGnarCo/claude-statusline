@@ -39,3 +39,10 @@ jobs:
       # exit-code assertions. Bash 3.2-safe; needs jq (present on ubuntu-latest).
       - name: tests
         run: bash test/run.sh
+
+      # The agent-panel contract is validated separately: Claude Code silently
+      # falls back to the default row for anything it cannot parse, so a broken
+      # subagent statusline produces no user-visible error at all. These
+      # assertions are the only thing that would catch it.
+      - name: subagent tests
+        run: bash test/subagent.sh

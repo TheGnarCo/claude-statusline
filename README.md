@@ -68,19 +68,29 @@ with color off entirely.
 statusline rather than an add-on. It drives Claude Code's **agent panel** — the per-task
 rows shown for spawned subagents — and is wired separately, via `subagentStatusLine`.
 
-It reads Claude Code's subagent JSON on stdin and emits `{"tasks":[...]}` on stdout in a
-single `jq` pass (no per-task subshell, `awk`, or `date` forks). Per task it reports:
+It reads the agent-panel JSON on stdin and writes **one JSON line per row** —
+`{"id": "<task id>", "content": "<row body>"}` — in a single `jq` pass (no
+per-task subshell, `awk` or `date` fork). `content` replaces the whole row body
+and is rendered as-is, so it may carry ANSI.
 
-- **`state`** — `success` / `error` / `inactive`, mapped from the reported status.
-  `complete`, `completed`, `succeeded`, `success` → `success`; `failed`, `error` → `error`;
-  `inactive`, `idle` → `inactive`; anything else (i.e. still running) → `success`.
-- **`elapsed`** — `30s` / `2m05s` / `1h02m`, compacted to `30s` / `2m` / `1h` when the
-  panel is narrow (`columns < 100`).
-- **`tokenText`** — integer abbreviation, no decimals or float math: `42` / `12k` / `1M`.
+Each row shows the task name, a context bar over its own window, the token count,
+the model and effort on a wide panel, and elapsed time:
 
-Output keys are emitted sorted, so the JSON is deterministic and diffable. Malformed or
-non-object input — and a missing `jq` — degrade to an empty panel (`{"tasks":[]}`) rather
-than an error, on the same "must never fail" principle as the main statusline.
+```
+Explore  ▒▒░░░░░░░░ 42k  opus-5 high  2m05s
+Review   ▒▒▒▒▒▒▒▒▒░ 900k              1h01m
+```
+
+A failed task renders its name in red, since the custom body replaces the status
+text the panel would otherwise show. A task whose `contextWindowSize` isn't known
+yet gets a plain token count instead of a bar — a bar drawn against a guessed
+denominator would be a lie. `contextWindowSize` and `model` need Claude Code
+v2.1.205+, `effort` v2.1.214+; each cell is simply absent on older builds.
+
+**Every failure path emits nothing at all**, rather than an empty `content`.
+That distinction matters: an empty string *hides* a row, so a malformed payload
+would blank the agent panel instead of leaving it on Claude Code's default
+rendering.
 
 ## Requirements
 
