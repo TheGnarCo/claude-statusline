@@ -241,6 +241,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "ctx_window_size=\(.context_window.context_window_size // 0 | tostring)",
   "cache_read_tokens=\(.context_window.current_usage.cache_read_input_tokens // 0 | tostring)",
   "session_id=\(.session_id // "")",
+  "cc_version=\(.version // "")",
   "worktree_name=\(.worktree.name // "")",
   "project_dir=\(.workspace.project_dir // "")",
   "cwd=\(.workspace.current_dir // "")",
@@ -262,7 +263,7 @@ fields=$(printf '%s' "$input" | jq -r '
 ' 2> /dev/null)
 
 used_pct="" ctx_input_tokens=0 ctx_window_size=0 cache_read_tokens=0
-session_id="" worktree_name_input="" project_dir="" cwd_input=""
+session_id="" cc_version="" worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
 lines_added=0
@@ -279,6 +280,7 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     ctx_window_size) ctx_window_size=$_v ;;
     cache_read_tokens) cache_read_tokens=$_v ;;
     session_id) session_id=$_v ;;
+    cc_version) cc_version=$_v ;;
     worktree_name) worktree_name_input=$_v ;;
     project_dir) project_dir=$_v ;;
     cwd) cwd_input=$_v ;;
@@ -709,6 +711,75 @@ else
 fi
 [ -n "$repo_https" ] && title_disp=$(osc8 "$repo_https" "$title_disp")
 
+# ── Update check ────────────────────────────────────────────────────────────
+# The one cell that cannot be computed from stdin: whether a newer Claude Code
+# exists. Three rules keep it honest on a row that redraws several times a second:
+#
+#   1. It NEVER blocks the render. The check runs detached; this render draws
+#      whatever the cache already holds, which on a cold start is nothing.
+#   2. It runs at most once a day, behind the same session-keyed cache as git.
+#   3. Silence is the normal state. The chip exists only when you are behind.
+#
+# It makes a network request, which nothing else here does — hence the opt-out,
+# and hence saying so plainly in the README rather than burying it.
+UPDATE_TTL=86400  # a day between checks
+UPDATE_RETRY=3600 # ...but retry an hour after a failed one
+UPDATE_URL='https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
+
+update_enabled=1
+case "${CLAUDE_STATUSLINE_NO_UPDATE_CHECK:-}" in '' | 0) ;; *) update_enabled=0 ;; esac
+[ "$CACHE_OK" -eq 1 ] || update_enabled=0
+[ -n "$cc_version" ] || update_enabled=0
+command -v curl > /dev/null 2>&1 || update_enabled=0
+
+# ver_gt <a> <b> — 0 when a is strictly newer than b. Dotted integers only, and
+# non-numeric components (a "2.1.0-beta") compare as 0, which makes a prerelease
+# read as older than its release rather than sorting unpredictably.
+ver_gt() {
+  local a=$1 b=$2 i=0 x y
+  for i in 1 2 3; do
+    x=${a%%.*} y=${b%%.*}
+    case "$x" in '' | *[!0-9]*) x=0 ;; esac
+    case "$y" in '' | *[!0-9]*) y=0 ;; esac
+    [ "$x" -gt "$y" ] && return 0
+    [ "$x" -lt "$y" ] && return 1
+    case "$a" in *.*) a=${a#*.} ;; *) a=0 ;; esac
+    case "$b" in *.*) b=${b#*.} ;; *) b=0 ;; esac
+  done
+  return 1
+}
+
+# Detached, output discarded, hard timeout. A statusline must never leave a
+# process hanging around waiting on a socket.
+spawn_update_check() {
+  cache_write version "" # claim the slot first, so concurrent renders don't all fetch
+  (
+    _latest=$(curl -fsS --max-time 5 "$UPDATE_URL" 2> /dev/null |
+      jq -r '.version // empty' 2> /dev/null)
+    case "$_latest" in
+      '' | *[!0-9.]*) exit 0 ;; # unparseable: leave the empty claim to expire
+    esac
+    cache_write version "$_latest"
+  ) > /dev/null 2>&1 &
+}
+
+update_chip=""
+if [ "$update_enabled" -eq 1 ]; then
+  if _cached=$(cache_read version "$UPDATE_TTL"); then
+    _latest=${_cached%%
+*}
+    if [ -n "$_latest" ]; then
+      ver_gt "$_latest" "$cc_version" && update_chip="↑${_latest}"
+    elif ! cache_read version "$UPDATE_RETRY" > /dev/null; then
+      # An empty entry is a claim whose fetch failed. Retry on the hour rather
+      # than staying silent for a full day over one dropped request.
+      spawn_update_check
+    fi
+  else
+    spawn_update_check
+  fi
+fi
+
 # ── Row 1 ───────────────────────────────────────────────────────────────────
 # Built at a shed level; the caller walks levels up until the row fits. Sets
 # R1_D (display) and R1_P (its visible-length twin).
@@ -790,6 +861,13 @@ build_row1() {
   if [ -n "$p" ]; then
     G_D[n]=$d
     G_P[n]=$p
+    n=$((n + 1))
+  fi
+
+  # update — absent unless you are behind, so it costs nothing in the normal case
+  if [ "$lvl" -lt 1 ] && [ -n "$update_chip" ]; then
+    G_D[n]="${YELLOW}${update_chip}${RST}"
+    G_P[n]="$update_chip"
     n=$((n + 1))
   fi
 

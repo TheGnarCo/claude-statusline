@@ -571,7 +571,8 @@ run_cached() { # run_cached <tmpdir> <session-payload> [extra-env-assignments...
   shift 2
   env TMPDIR="$td" COLUMNS=120 HOME=/home/tester COLORTERM=truecolor \
     NO_COLOR='' CMUX_SURFACE_ID='' OTEL_RESOURCE_ATTRIBUTES='' \
-    CLAUDE_STATUSLINE_HIDE_TELEM='' "$@" bash "$SCRIPT" <<< "$payload"
+    CLAUDE_STATUSLINE_HIDE_TELEM='' CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 \
+    "$@" bash "$SCRIPT" <<< "$payload"
 }
 
 # A render inside a repo writes exactly one entry, named for the session.
@@ -653,6 +654,68 @@ rm -rf "$RO"
 
 rm -rf "$CACHEDIR"
 cd "$NONGIT" || exit 2
+
+# ── Update check ─────────────────────────────────────────────────────────────
+# Every case here PRE-SEEDS the version cache, so the fetch path is never taken
+# and the suite makes no network request. `run_cached` disables the check by
+# default; these re-enable it with CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0.
+UPD=$(mktemp -d)
+mkdir -p "$UPD/claude-statusline"
+P_VER='{"session_id":"ver-1","version":"2.1.236","workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+seed_version() { printf '%s\n%s' "$(date +%s)" "$1" > "$UPD/claude-statusline/ver-1-version"; }
+render_upd() { run_cached "$UPD" "$P_VER" CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | sed -n 2p; }
+
+seed_version "2.1.240"
+case "$(render_upd)" in *'↑2.1.240'*) c=0 ;; *) c=1 ;; esac
+assert "update: a newer version raises the chip" "$c"
+
+# Silence is the normal state — same version, and behind, must both render nothing.
+seed_version "2.1.236"
+case "$(render_upd)" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: the current version raises no chip" "$c"
+seed_version "2.1.100"
+case "$(render_upd)" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: an older published version raises no chip" "$c"
+
+# Component-wise, not lexical: 2.1.9 vs 2.1.10 is the case a string compare fails.
+seed_version "2.1.300"
+case "$(render_upd)" in *'↑2.1.300'*) c=0 ;; *) c=1 ;; esac
+assert "update: versions compare component-wise, not lexically" "$c"
+seed_version "2.2.0"
+case "$(render_upd)" in *'↑2.2.0'*) c=0 ;; *) c=1 ;; esac
+assert "update: a minor bump is newer than any patch" "$c"
+
+# A prerelease component reads as 0 rather than sorting unpredictably.
+seed_version "2.1.236-beta"
+case "$(render_upd)" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: a prerelease of the current version is not 'newer'" "$c"
+
+# Opting out silences the chip even with a newer version sitting in the cache.
+seed_version "2.1.240"
+case "$(run_cached "$UPD" "$P_VER" | strip_ansi)" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 silences the chip" "$c"
+
+# The chip must not disturb the frame.
+seed_version "2.1.240"
+ub=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || ub=1; done <<< "$(run_cached "$UPD" "$P_VER" CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | vislen)"
+assert "update: the chip leaves the geometry intact" "$([ -z "$ub" ] && echo 0 || echo 1)"
+
+# A payload with no version cannot be compared, so nothing is checked or drawn.
+P_NOVER='{"session_id":"ver-2","workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+out_nover=$(run_cached "$UPD" "$P_NOVER" CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi)
+case "$out_nover" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: no version on stdin means no chip" "$c"
+assert "update: ...and no fetch is claimed for it" \
+  "$([ ! -f "$UPD/claude-statusline/ver-2-version" ] && echo 0 || echo 1)"
+
+# An empty cache entry is a claim whose fetch failed: it must not render a chip,
+# and must not be mistaken for a version.
+printf '%s\n' "$(date +%s)" > "$UPD/claude-statusline/ver-1-version"
+case "$(render_upd)" in *'↑'*) c=1 ;; *) c=0 ;; esac
+assert "update: a failed check renders no chip" "$c"
+
+rm -rf "$UPD"
 
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
