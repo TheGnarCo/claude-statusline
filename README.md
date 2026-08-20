@@ -1,84 +1,192 @@
 # claude-statusline
 
-The Gnar Company's [Claude Code](https://claude.com/claude-code) statusline + subagent
-statusline, each a single bash script. No Rust, no extra binaries — just `git` and `jq`.
-Targets macOS system bash (3.2) so it's a portable drop-in.
+The Gnar Company's [Claude Code](https://claude.com/claude-code) statusline +
+subagent statusline, each a single bash script. No Rust, no extra binaries — just
+`git` and `jq`. Targets macOS system bash (3.2) so it's a portable drop-in.
 
 ## What it shows
 
 ```
-TheGnarCo/claude-statusline [@main/wt ^2 !2 +3][reviewer +42/-7 $1.23 ($7.38/h)][Opus 4.8 1M High N Explanatory][telem tag]
-CTX ~~~~....................|.....  13% 128k/1M cache 78% 67%->AC
-5h  |###########------------------  40% 3h 12m left [+8%]
-7d  :::::::::::::|::______________  56% 3d 4h left [+12%]
+╭─ TheGnarCo/claude-statusline ────────────────────────────────────────────────────────────────────── untagged ╮
+│ @work ^3 v2 !1 +1 ?1 *1 +120/-45         │         Opus 4.8 Hi Explanatory         │         $1.23  $7.38/h  │
+├─ USAGE ──────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ CTX ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░ 420k/1M │ 5h ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░ 73% 5h0m │ 7d ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░ 7d0h │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-(The 7-day row appears only when it's the binding window; otherwise it rides on the 5h line
-as a compact `7d 22%` badge and this is a three-line statusline.)
+*(That block is `test/golden/panel-full.txt` verbatim — the suite pins it, so it
+cannot drift from what the script actually prints.)*
 
-Pure ASCII — no Nerd Font required. **Each bar row has its own fill and track glyph**, so
-you know which row you're reading from its texture alone, before color and with color off
-entirely:
+A five-line panel with two rows of content. **The top rule carries what is true of
+the whole panel** — the repo, and whether its usage is attributed in telemetry.
+**Row 1 is what this session is**; **row 2 is what it is spending**. Both content
+rows are divided by vertical rules in burnt Gnar orange, the same colour as the
+frame.
 
-| Row | Fill | Track | Gradient |
-| --- | --- | --- | --- |
-| `CTX` context window | `~` wave | `.` dots | grey → **purple** → tinted white |
-| `5h` live window | `#` solid | `-` rule | grey → **warm** → tinted white |
-| `7d` long window | `:` dotted | `_` baseline | grey → **blue** → tinted white |
+### The marks
 
-Shared across all three: `|` clock/threshold and `*` burn projection (`!` when the
-projection runs off the end). Every gradient starts from the same grey and ends in a white
-tinted toward its own hue, so the three bars read as one system — and because they share
-that grey origin, a nearly empty bar is grey on every row. That is why the rows differ by
-*glyph* and not by hue alone: at low fill the glyph pair is the only thing distinguishing
-them, and under `NO_COLOR` it is the only thing at all.
+Every meter is one texture: a mid shade over a light track.
 
-Bars size themselves to the terminal via the `COLUMNS` env var, holding back a small margin
-so they never overrun Claude's own chrome. The layout stays compact: **2–4 lines** —
-identity and config share one row of colored `[]` groups, and the 7-day window shows only
-when it's the binding one.
+| Mark | Meaning |
+| --- | --- |
+| `▒` | spent |
+| `░` | untouched |
 
-- **Line 1** — the repo as **`owner/name`** (linked to GitHub; the owner is muted so the repo name stays the anchor), or the cwd's last two components outside a repo — then **one `[]` per concept**: a bracket is a group of related cells, not a single field, so the eye stops three times instead of eight. Groups pack left-to-right and wrap to a continuation line only when they won't fit the pane. Members are space-separated, each keeping its own color, and any member with nothing to say drops out (an all-empty group renders no bracket at all):
-  - **`[@branch/worktree counters +added/-removed]`** — **git**. Branch (blue, links to the tree) and worktree (magenta), then the working-tree state as colored ASCII sigils: `x`conflict `^`ahead `v`behind `!`modified `+`staged `?`untracked `*`stash, and finally this session's churn — e.g. `[@main/wt ^2 !2 +3 +120/-45]`. The churn trails because the counters say what is in the tree now and the churn says how it got there; it's the first member of the group to go on a narrow pane. Ordered most-urgent-first, which is also the order a too-narrow pane gives them up in (from the tail): a conflict or unpushed commits are what you cannot afford to miss, a stash count is what you can. Long branch/worktree names are middle-ellipsized (`feature/some-l..name-here`) to a width budget. When the worktree name is **already part of the branch** — which it always is for Claude Code's `worktree-<name>` branches — it isn't restated as a suffix; that run of the branch is recolored magenta in place, which is the same information for 23 fewer columns (`[@worktree-my-fix/my-fix]` → `[@worktree-`**`my-fix`**`]`). A worktree whose name isn't in the branch still gets its `/suffix`.
-  - **`[model 1M effort style $cost ($/h)]`** — **this session**: every knob that decides how it behaves. There is no name cell — neither `agent.name` nor `session_name` renders. The agent name used to lead this group, but an agent that never picked a type is named `claude`, which names nothing and can't tell two agents apart, and the pane is already identified by the title's `owner/name` and the branch. So the group opens on the model, then the context-window flag (`1M` for the extended window), reasoning effort (`Lo`/`Med`/`Hi`/`XHi`/`Max` — you read it against the other tiers, not as a word), and output style — the style appears only when a **non-default** one is set (Claude Code names the built-in style `claude`, which said nothing and sat on every row). Cost + per-hour burn trail: the group's one derived number, and the only member that keeps moving on its own. The `($/h)` half is kept only when the **whole row** still fits on one line with it — a burn rate that costs a wrapped line costs more than it says.
-  - **`[telem tag]` / `[no telem tag]`** — **telemetry coverage**. Whether this repo's Claude Code usage is attributed to a project in [telem.thegnar.info](https://telem.thegnar.info) (a `project.name` OTEL attribute). Two shades of one hue, because this is a single dial with two positions rather than two unrelated states: dim burnt orange when it is; bright orange when it isn't and the usage lands there under *(untagged)* — run `/toolkit:project-telem-tag` in the repo to fix that. Nothing rests on telling the shades apart, since the chips already differ by the word *no*. Both states link to the dashboard. Only rendered inside a git repo, and it sits last so it's the first group to spill onto a continuation line on a narrow pane.
+The three meters are told apart by **the label immediately in front of each one**
+and by colour — context purple, the 5-hour window warm, the 7-day window blue.
+That is a deliberate reversal of the per-row glyph tiers this statusline used to
+have: those existed because bars stacked on separate rows had no adjacent label to
+disambiguate them. Side by side, they do.
 
-  (No PR cell — Claude Code already surfaces the current PR.)
-- **Line 2** — context window: a `~` bar on a purple gradient, with an **amber** cell marking the autocompact threshold. The `%` escalates green→amber→red as it approaches; below the threshold a `N%->AC` badge shows live headroom, and once crossed a `[AC]` chip (plus `[200k+]` past 200k tokens). Trailing `Nk/Nk` is tokens-in-context / window size, and `cache N%` is the share served from the prompt cache.
-- **Line 3** — the 5-hour rate-limit window: a `#` bar on the warm gradient. The **blue** pip is the wall-clock position in the window; the yellow pip projects end-of-window usage at the current burn rate; `time left` counts down to the reset; `[+N%]` is usage-vs-clock delta. When the 7-day window isn't binding it rides here as a compact `7d N%` badge.
-- **Line 4** — the 7-day window: a `:` bar on the blue gradient, shown only when it's ≥50% or busier than the 5-hour window. Its clock pip is **pink**, not blue — a pip has to be findable against its own row's fill, and blue-on-blue isn't.
+### Row 1 — what this session is
 
-Each row's clock pip is picked to stay legible across that row's whole gradient, which is
-why the three differ: amber reads against purple, blue against warm, pink against blue. The
-pip's *shape* carries the meaning; its color is chosen purely so you can find it.
+Groups are separated by a vertical rule and **spread across the full row**
+(space-between), so the row reaches both edges rather than trailing off into
+blank. Each group drops out entirely when it has nothing to say.
 
-Every linked cell — repo, branch, telemetry chip — is an OSC8 hyperlink and renders
-**underlined**, so you can tell what's clickable before you try it; ⌘-click them in a
-supporting terminal. Under cmux the escape is dropped (it miscounts the
-zero-width payload), and the underline goes with it — the text
-stays, the promise of a link doesn't.
+- **git** — the branch (blue, linked to the tree) with its `@` sigil and, when the
+  active worktree's name isn't already part of the branch, a magenta `/worktree`
+  suffix. Claude Code names its worktree branches `worktree-<name>`, so that run
+  is recoloured in place instead of restated. Then the working tree as coloured
+  ASCII sigils, most urgent first — `x`conflict `^`ahead `v`behind `!`modified
+  `+`staged `?`untracked `*`stash — and finally this session's churn `+N/-M`.
+- **config** — model (cyan), reasoning effort (green, as `Lo`/`Med`/`Hi`/`XHi`/`Max`
+  — you read it against the other tiers, not as a word), and output style
+  (magenta), which appears only when a **non-default** style is set.
+- **spend** — total cost and per-hour burn (green).
+
+When the pane narrows, the row sheds cheapest-loss-first, one rung at a time:
+
+| Rung | What goes |
+| --- | --- |
+| 1 | the derived per-hour burn (recomputable from the total) |
+| 2 | the output style |
+| 3 | this session's churn **and** a worktree suffix that isn't already in the branch |
+| 4 | the working-tree sigils |
+| 5 | the spend |
+| 6 | the config group |
+
+Only after all six does the branch name itself middle-ellipsize — and then by
+**exactly the overflow**, never to a fixed stub, so a pane that can hold most of
+a branch shows most of it. It will not shrink below 6 characters.
+
+### Row 2 — what it is spending
+
+Three meters, each `LABEL bar detail`. **There are no percentages**: the bar is
+the proportion. What sits beside each meter is what a bar cannot say.
+
+- **CTX** — tokens in context over the window size (`420k/1M`). Its **label is the
+  autocompact indicator**, escalating green → amber → bold red as it closes on the
+  threshold. With no percentage left to escalate and a flat bar with no boundary to
+  mark, the label is where that warning lives. Default threshold 80%; override with
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`.
+- **5h / 7d** — the rate-limit windows, each with its time to reset (`5h0m`,
+  `2d4h`). A window shows its percentage **only at 70% or above**: a bar cannot
+  separate 73% from 78%, and that difference only matters near the limit, so the
+  number costs its columns in the state that wants them and no other.
+
+A meter is never dropped to save room — a missing meter reads as "no data", which
+is a different and wrong statement. On a narrow pane the bars shrink instead.
+
+### Links
+
+The repo title, the branch, and the coverage tag are OSC8 hyperlinks, rendered
+**underlined** so you can tell what is clickable before you try it; ⌘-click them
+in a supporting terminal. Under cmux the escape is dropped (it miscounts the
+zero-width payload) and the underline goes with it — the text stays, the promise
+of a link doesn't.
+
+### Coverage
+
+`tagged` / `untagged` in the top rule says whether this repo's Claude Code usage is
+attributed to a project in [telem.thegnar.info](https://telem.thegnar.info) (a
+`project.name` OTEL attribute). Untagged usage lands there under *(untagged)* — run
+`/toolkit:project-telem-tag` in the repo to fix it. Both states render and both
+link to the dashboard; the untagged one takes the **bright** orange, which is
+reserved for it and used nowhere else, precisely so it can still raise an alarm
+against orange chrome.
+
+## Requirements
+
+- `git` and `jq` on `PATH`.
+- **A terminal font with Unicode block elements and box drawing.** `▒ ░ ╭ ╮ ╰ ╯ ─ │
+  ├ ┤` — CP437-heritage characters, present in essentially every terminal font for
+  forty years, and single-width, so the column arithmetic stays deterministic.
+  **This replaced the previous pure-ASCII output and there is no ASCII fallback.**
+  A font that substitutes a double-width glyph for any of them will misalign the
+  frame.
+- Claude Code v2.1.153+ for `COLUMNS`-based sizing (older versions fall back to a
+  fixed width).
+- macOS system bash (3.2) or newer.
 
 Colors honor [`NO_COLOR`](https://no-color.org) and degrade to a 256-color ramp on
-terminals without truecolor (`COLORTERM`); the ASCII pip shapes keep the bars legible even
-with color off entirely.
+terminals without truecolor (`COLORTERM`). Under `NO_COLOR` the frame, the labels
+and every readout still render — only the hues distinguishing the three meters are
+lost, and the labels already carry that.
+
+## Install
+
+### Via the Gnar plugin (recommended)
+
+Install the `toolkit` plugin from the [`gnar` marketplace](https://github.com/TheGnarCo/agent-skills)
+and run:
+
+```
+/gnar-statusline
+```
+
+The command fetches the latest release of these scripts, backs up any existing
+statusline config, and wires `~/.claude/settings.json` for you.
+
+### Manual
+
+```sh
+git clone https://github.com/TheGnarCo/claude-statusline ~/Code/claude-statusline
+~/Code/claude-statusline/install.sh
+```
+
+`install.sh` symlinks both scripts into `~/.local/bin`, then add to
+`~/.claude/settings.json`:
+
+```json
+{
+  "statusLine":         { "type": "command", "command": "~/.local/bin/claude-statusline", "refreshInterval": 15 },
+  "subagentStatusLine": { "type": "command", "command": "~/.local/bin/claude-subagent-statusline" }
+}
+```
+
+`refreshInterval` is recommended: status lines are otherwise event-driven, so the
+time-based cells (`5h0m`, `2d4h`) would freeze while the session sits idle. A 15s
+timer keeps them live. Omit it to update only on events.
+
+## Knobs
+
+| Variable | Effect |
+| --- | --- |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Autocompact threshold, 1–100. Defaults to 80. Drives the CTX label's escalation. |
+| `CLAUDE_STATUSLINE_CHROME_MARGIN` | Columns held back from the pane's right edge so the panel doesn't overrun Claude's own UI hints. Defaults to 8; `0` fills edge to edge. |
+| `CLAUDE_STATUSLINE_HIDE_TELEM` | `1` hides the coverage tag (for anyone not sending OTEL telemetry, where it has nothing to say). Unset and `0` both mean show. |
+| `NO_COLOR` | Suppresses all ANSI. |
 
 ## The subagent statusline
 
-`subagent-statusline.sh` is the second export of this repo, and a peer of the main
-statusline rather than an add-on. It drives Claude Code's **agent panel** — the per-task
-rows shown for spawned subagents — and is wired separately, via `subagentStatusLine`.
+`subagent-statusline.sh` is the second export of this repo and a peer of the main
+statusline rather than an add-on. It drives Claude Code's **agent panel** — the
+per-task rows shown for spawned subagents — and is wired separately, via
+`subagentStatusLine`.
 
 It reads the agent-panel JSON on stdin and writes **one JSON line per row** —
 `{"id": "<task id>", "content": "<row body>"}` — in a single `jq` pass (no
 per-task subshell, `awk` or `date` fork). `content` replaces the whole row body
 and is rendered as-is, so it may carry ANSI.
 
-Each row shows the task name, a context bar over its own window, the token count,
-the model and effort on a wide panel, and elapsed time:
+Rows use the same marks as the main panel, so a subagent's context pressure reads
+the way the session's does:
 
 ```
 Explore  ▒▒░░░░░░░░ 42k  opus-5 high  2m05s
 Review   ▒▒▒▒▒▒▒▒▒░ 900k              1h01m
+Fresh    500 tokens                   30s
 ```
 
 A failed task renders its name in red, since the custom body replaces the status
@@ -92,77 +200,42 @@ That distinction matters: an empty string *hides* a row, so a malformed payload
 would blank the agent panel instead of leaving it on Claude Code's default
 rendering.
 
-## Requirements
-
-- `git` and `jq` on `PATH`.
-- No special font — output is pure ASCII.
-- Claude Code v2.1.153+ for `COLUMNS`-based bar sizing (older versions fall back to a fixed width).
-- Works with macOS system bash (3.2) and newer.
-
-## Install
-
-### Via the Gnar plugin (recommended)
-
-Install the `toolkit` plugin from the [`gnar` marketplace](https://github.com/TheGnarCo/agent-skills)
-and run:
-
-```
-/gnar-statusline
-```
-
-The command fetches the latest release of these scripts, backs up any existing statusline
-config, and wires `~/.claude/settings.json` for you.
-
-### Manual
-
-```sh
-git clone https://github.com/TheGnarCo/claude-statusline ~/Code/claude-statusline
-~/Code/claude-statusline/install.sh
-```
-
-`install.sh` symlinks both scripts into `~/.local/bin`, then add to `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine":         { "type": "command", "command": "~/.local/bin/claude-statusline", "refreshInterval": 15 },
-  "subagentStatusLine": { "type": "command", "command": "~/.local/bin/claude-subagent-statusline" }
-}
-```
-
-`refreshInterval` is recommended here: status lines are otherwise event-driven, so the
-time-based cells (the 5h/7d clock pips, `time left`, and the burn projection) would
-freeze while the session sits idle. A 15s timer keeps them live. Omit it to update only
-on events.
-
 ## Notes
 
-- The 5h window shows `no rate-limit data yet` until you've made a request in the session that populates it.
-- The statusline writes nothing to disk. Every cell is rendered from the JSON Claude Code passes on stdin, except the telem-tag chip, which also reads the repo's `.claude/settings.json` — and only when the attribute isn't already in the environment.
-- Hide the telem-tag chip with `CLAUDE_STATUSLINE_HIDE_TELEM=1` (for anyone not sending OTEL telemetry, where the cell has nothing to say).
-- Set the autocompact marker with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100); defaults to 80.
-- Tune the right-edge chrome reserve with `CLAUDE_STATUSLINE_CHROME_MARGIN` (columns held back from the bar width); defaults to 8. Set `0` to fill edge-to-edge.
+- The 5h/7d meters appear only once the session has made a request that populates
+  the rate-limit fields.
+- The statusline writes nothing to disk. Every cell renders from the JSON Claude
+  Code passes on stdin, except the coverage tag, which also reads the repo's
+  `.claude/settings.json` — and only when the attribute isn't already in the
+  environment.
 
 ## Tests
 
-`test/run.sh` renders the script against fixture payloads and diffs the ANSI-stripped
-output against golden snapshots in `test/golden/`, plus color-mode and exit-code
-assertions. Run `test/run.sh` to check, `test/run.sh --update` to refresh the snapshots
-after an intentional change.
+`test/run.sh` renders the script against fixture payloads and diffs the
+ANSI-stripped output against golden snapshots in `test/golden/`, plus colour-mode,
+geometry, shed-order and exit-code assertions. Run `test/run.sh` to check,
+`test/run.sh --update` to refresh the snapshots after an intentional change.
+
+**The load-bearing assertion is geometry**: every emitted line must be exactly
+`COLUMNS - CHROME_MARGIN` wide. A frame whose rules and content rows disagree by
+one column is visibly broken, and that check is swept across widths and payloads
+because the shed ladder, the space-between join and the three-way bar split each
+round independently.
 
 ## Provenance
 
 Seeded from [`alxjrvs/claude-statusline`](https://github.com/alxjrvs/claude-statusline)
 at `7107dc5`, by its author.
 
-The difference between the two repos is **ownership, not features**. That one is one
-person's statusline, shaped to one person's taste. This one is **owned collectively by
-The Gnar Company** going forward — anyone here can change it, and it evolves by whatever
-the team decides it should show.
+The difference between the two repos is **ownership, not features**. That one is
+one person's statusline, shaped to one person's taste. This one is **owned
+collectively by The Gnar Company** — anyone here can change it, and it evolves by
+whatever the team decides it should show.
 
 So the two will diverge, but not from a spec written up front: they diverge because
 different people steer them. Nothing is synced in either direction, and there is
-deliberately no drift check between them. Cherry-pick by hand when a fix genuinely suits
-both.
+deliberately no drift check between them. Cherry-pick by hand when a fix genuinely
+suits both.
 
 ## License
 

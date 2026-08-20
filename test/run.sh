@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# claude-statusline snapshot tests.
+# claude-statusline snapshot + invariant tests.
 #
 #   test/run.sh            # run all cases, diff against golden snapshots
 #   test/run.sh --update   # regenerate the golden snapshots
 #
 # Most cases render in a throwaway NON-git temp dir so the git segments stay
 # empty and output is fully determined by the payload + env (the process pwd,
-# not the payload, drives git detection). One case renders in a throwaway git
-# repo to exercise long-branch truncation. Content snapshots are ANSI-stripped
-# (layout/content regressions — the class this suite exists to catch); color
-# behavior is checked separately by presence/absence assertions.
+# not the payload, drives git detection). Separate throwaway repos exercise
+# branch truncation, the full set of working-tree counters, and telemetry
+# detection.
 #
 # Determinism: HOME is pinned off-tree so dir_display never abbreviates to '~',
 # resets_at is a far-future sentinel so "time left" pins to the full window and
 # cancels out the real clock, COLUMNS is fixed per case, and
-# OTEL_RESOURCE_ATTRIBUTES is pinned empty so the telem-tag chip answers to the
+# OTEL_RESOURCE_ATTRIBUTES is pinned empty so the coverage tag answers to the
 # fixture alone — not to whether the session running the suite is itself tagged
-# (this repo is, CI isn't, and that would otherwise flip the git goldens).
+# (this repo is, CI isn't, and that would otherwise flip every git golden).
+#
+# THE load-bearing invariant is geometry: the panel is a frame, and a frame whose
+# rules and content rows disagree by even one column is visibly broken. Every
+# emitted line must be exactly COLUMNS - CHROME_MARGIN wide. That is asserted
+# across a sweep of widths and payloads, and it is the check most likely to catch
+# a future edit.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -29,9 +34,16 @@ UPDATE=0
 [ "${1:-}" = "--update" ] && UPDATE=1
 
 FAR_FUTURE=9999999999 # resets_at sentinel (year 2286): always in the future
+MARGIN=8              # CHROME_MARGIN in statusline.sh
 PASS=0 FAIL=0
 
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g; s/\033\]8;;[^\007]*\007//g'; }
+
+# Visible width per line, locale-independent. Deleting UTF-8 continuation bytes
+# leaves exactly one byte per character, so `length` is then the column count —
+# `wc -m` and awk's own length would each need a UTF-8 locale to agree, and CI
+# and macOS do not ship the same ones.
+vislen() { LC_ALL=C awk '{ s = $0; gsub(/[\200-\277]/, "", s); print length(s) }'; }
 
 # run_sl <cols> <payload>  — render in the current directory with pinned env.
 run_sl() {
@@ -57,18 +69,18 @@ snapshot() {
     FAIL=$((FAIL + 1))
     return
   fi
-  if diff -u "$golden" <(printf '%s\n' "$actual") > /tmp/sl_diff.$$ 2>&1; then
+  if diff -u "$golden" <(printf '%s\n' "$actual") > "/tmp/sl_diff.$$" 2>&1; then
     printf 'ok       %s\n' "$name"
     PASS=$((PASS + 1))
   else
     printf 'FAIL     %s\n' "$name"
-    cat /tmp/sl_diff.$$
+    cat "/tmp/sl_diff.$$"
     FAIL=$((FAIL + 1))
   fi
-  rm -f /tmp/sl_diff.$$
+  rm -f "/tmp/sl_diff.$$"
 }
 
-# assert <name> <cond-desc> — bump counters from an externally evaluated result.
+# assert <name> <result> — 0 passes.
 assert() {
   if [ "$2" -eq 0 ]; then
     printf 'ok       %s\n' "$1"
@@ -81,278 +93,226 @@ assert() {
 
 # ── Payloads ─────────────────────────────────────────────────────────────────
 DIR='"workspace":{"current_dir":"/work/DevEnv/claude-statusline"}'
+CTX='"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000}'
+RL='"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}'
 
-P_NORMAL='{'"$DIR"',"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"high"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"pr":{"number":3,"review_state":"changes_requested"},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
-
-P_SEVEN_BINDING='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":60,"resets_at":'"$FAR_FUTURE"'}}}'
-
-P_AUTOCOMPACT='{'"$DIR"',"context_window":{"used_percentage":82,"total_input_tokens":170000,"context_window_size":200000,"current_usage":{"cache_read_input_tokens":120000}},"exceeds_200k_tokens":true,"model":{"display_name":"Sonnet 5"},"effort":{"level":"medium"},"cost":{"total_cost_usd":0.44,"total_duration_ms":120000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":12,"resets_at":'"$FAR_FUTURE"'}}}'
-
-P_NEAR_AC='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens":140000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":5,"resets_at":'"$FAR_FUTURE"'}}}'
-
+P_NORMAL='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},'"$RL"'}'
 P_FRESH='{"workspace":{"current_dir":"/work/scratch/tmp"},"context_window":{"used_percentage":3,"total_input_tokens":8000,"context_window_size":200000},"model":{"display_name":"Haiku 4.5"}}'
+# Quiet windows: both below WINDOW_LOUD_PCT, so neither prints a percentage.
+P_QUIET='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"rate_limits":{"five_hour":{"used_percentage":22,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":11,"resets_at":'"$FAR_FUTURE"'}}}'
+# Loud: both at/above the threshold, so both print one.
+P_LOUD='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"rate_limits":{"five_hour":{"used_percentage":88,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":70,"resets_at":'"$FAR_FUTURE"'}}}'
+# Context calm / approaching / past the autocompact threshold (default 80).
+P_CTX_CALM='{'"$DIR"',"context_window":{"used_percentage":20,"total_input_tokens":40000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+P_CTX_NEAR='{'"$DIR"',"context_window":{"used_percentage":70,"total_input_tokens":140000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+P_CTX_OVER='{'"$DIR"',"context_window":{"used_percentage":88,"total_input_tokens":176000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
+P_COST='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000},'"$RL"'}'
 
-# Rich line-1: the xhigh effort tier and the 1M context flag — exercises the
-# fields folded onto line 1 by the compact layout, and locks effort xhigh -> "XHi"
-# (not "Xhigh"). Both session_name and agent.name are carried in the payload on
-# purpose: neither is a cell any more, and this pins that they render nothing.
-P_RICH='{'"$DIR"',"session_name":"mine","agent":{"name":"reviewer"},"context_window":{"used_percentage":42,"total_input_tokens":420000,"context_window_size":1000000,"current_usage":{"cache_read_input_tokens":360000}},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000},"rate_limits":{"five_hour":{"used_percentage":73,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":45,"resets_at":'"$FAR_FUTURE"'}}}'
-
-# ── Cases (non-git) ────────────────────────────────────────────────────────
 NONGIT=$(mktemp -d)
-# Pre-declared so the trap body is safe under `set -u` from the moment it's armed:
-# these are assigned ~100 lines below, and an early `exit 2` before then would
-# otherwise abort the trap on an unbound variable and clean up nothing.
-GITREPO="" TELEMREPO=""
-trap 'rm -rf "$NONGIT" "$GITREPO" "$TELEMREPO"' EXIT
+GITREPO="" COUNTERS="" BARE="" CLONE="" TELEMREPO=""
+trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$TELEMREPO"' EXIT
 cd "$NONGIT" || exit 2
 
-snapshot normal 120 "$P_NORMAL"
-snapshot seven-binding 120 "$P_SEVEN_BINDING"
-snapshot autocompact 120 "$P_AUTOCOMPACT"
-snapshot near-ac 120 "$P_NEAR_AC"
-snapshot fresh-no-rate 120 "$P_FRESH"
-snapshot narrow 60 "$P_NORMAL"
-snapshot rich-line1 120 "$P_RICH"
+# ── Snapshots (non-git) ──────────────────────────────────────────────────────
+snapshot panel-normal 120 "$P_NORMAL"
+snapshot panel-wide 160 "$P_NORMAL"
+snapshot panel-narrow 60 "$P_NORMAL"
+snapshot panel-fresh 120 "$P_FRESH"
+snapshot panel-quiet 120 "$P_QUIET"
+snapshot panel-loud 120 "$P_LOUD"
 
-# ── Color-mode assertions (non-git) ─────────────────────────────────────────
+# ── Geometry: the frame must close on every line, at every width ─────────────
+# Swept rather than spot-checked because the shed ladder, the space-between join
+# and the three-way bar split each round independently, and an off-by-one only
+# surfaces at particular widths.
+geo_bad=""
+for _p in "$P_NORMAL" "$P_FRESH" "$P_QUIET" "$P_LOUD" "$P_COST" "$P_CTX_OVER"; do
+  for _w in 60 61 62 63 64 72 80 88 96 100 111 112 120 133 160 200; do
+    _want=$((_w - MARGIN))
+    while IFS= read -r _len; do
+      [ "$_len" -eq "$_want" ] || geo_bad="${geo_bad} ${_w}:${_len}"
+    done <<< "$(run_sl "$_w" "$_p" | strip_ansi | vislen)"
+  done
+done
+if [ -n "$geo_bad" ]; then printf 'geometry drift (cols:got):%s\n' "$geo_bad"; fi
+assert "geometry: every line is exactly COLUMNS-CHROME_MARGIN wide" \
+  "$([ -z "$geo_bad" ] && echo 0 || echo 1)"
+
+# ── The panel is five lines, and framed ─────────────────────────────────────
+out=$(run_sl 120 "$P_NORMAL" | strip_ansi)
+case "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" in 5) c=0 ;; *) c=1 ;; esac
+assert "frame: the panel is exactly five lines" "$c"
+
+l1=$(printf '%s\n' "$out" | sed -n 1p)
+l2=$(printf '%s\n' "$out" | sed -n 2p)
+l3=$(printf '%s\n' "$out" | sed -n 3p)
+l4=$(printf '%s\n' "$out" | sed -n 4p)
+l5=$(printf '%s\n' "$out" | sed -n 5p)
+
+case "$l1" in '╭─'*'╮') c=0 ;; *) c=1 ;; esac
+assert "frame: the top rule opens and closes its corners" "$c"
+case "$l3" in '├─ USAGE '*'┤') c=0 ;; *) c=1 ;; esac
+assert "frame: the USAGE label is set into the middle rule" "$c"
+case "$l5" in '╰'*'╯') c=0 ;; *) c=1 ;; esac
+assert "frame: the bottom rule closes the box" "$c"
+c=1
+case "$l2" in '│ '*' │') case "$l4" in '│ '*' │') c=0 ;; esac ;; esac
+assert "frame: both content rows sit inside verticals" "$c"
+
+# ── The top rule carries identity: the repo, and the coverage verdict ───────
+case "$l1" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
+assert "title: the repo name renders in the top rule" "$c"
+# ...and not in the content rows, which would be saying it twice.
+case "$l2" in *'claude-statusline'*) c=1 ;; *) c=0 ;; esac
+assert "title: the repo is not restated in the text row" "$c"
+
+# ── Meters ───────────────────────────────────────────────────────────────────
+case "$l4" in *'CTX '*) c=0 ;; *) c=1 ;; esac
+assert "meters: the CTX meter renders" "$c"
+c=1
+case "$l4" in *'5h '*) case "$l4" in *'7d '*) c=0 ;; esac ;; esac
+assert "meters: both rate-limit windows render" "$c"
+case "$l4" in *'420k/1M'*) c=0 ;; *) c=1 ;; esac
+assert "meters: CTX carries the absolute token readout" "$c"
+# The bar is the proportion, so a meter states no percentage of its own...
+case "$l4" in *'42%'*) c=1 ;; *) c=0 ;; esac
+assert "meters: CTX states no percentage — the bar is the proportion" "$c"
+
+# ...except a window at or above WINDOW_LOUD_PCT, where a bar cannot separate 73%
+# from 78% and the difference has started to matter.
+quiet4=$(run_sl 120 "$P_QUIET" | strip_ansi | sed -n 4p)
+case "$quiet4" in *'22%'* | *'11%'*) c=1 ;; *) c=0 ;; esac
+assert "meters: a window below the loud threshold shows no percentage" "$c"
+loud4=$(run_sl 120 "$P_LOUD" | strip_ansi | sed -n 4p)
+c=1
+case "$loud4" in *'88%'*) case "$loud4" in *'70%'*) c=0 ;; esac ;; esac
+assert "meters: a window at or above the threshold shows its percentage" "$c"
+
+# A meter is never dropped: a missing meter reads as "no data", which is a
+# different and wrong statement from "narrow pane".
+narrow4=$(run_sl 60 "$P_NORMAL" | strip_ansi | sed -n 4p)
+c=1
+case "$narrow4" in *'CTX'*) case "$narrow4" in *'5h'*) case "$narrow4" in *'7d'*) c=0 ;; esac ;; esac ;; esac
+assert "meters: all three survive a narrow pane" "$c"
+
+# A payload with no rate limits renders CTX alone rather than empty windows.
+fresh4=$(run_sl 120 "$P_FRESH" | strip_ansi | sed -n 4p)
+c=1
+case "$fresh4" in *'CTX'*) case "$fresh4" in *'5h'*) c=1 ;; *) c=0 ;; esac ;; esac
+assert "meters: no rate-limit data renders CTX without empty windows" "$c"
+
+# ── The CTX label is the autocompact indicator ──────────────────────────────
+# With the percentages gone there is no number left to escalate and a flat bar has
+# no boundary to mark, so the label carries the warning. Asserted on the escape
+# codes, because the point is entirely colour.
 esc=$(printf '\033')
-
 out_color=$(run_sl 120 "$P_NORMAL")
+lab_color() { run_sl 120 "$1" | sed -n 4p | sed 's/.*\('"$esc"'\[[0-9;]*m\)CTX.*/\1/'; }
+case "$(lab_color "$P_CTX_CALM")" in "${esc}[32m") c=0 ;; *) c=1 ;; esac
+assert "autocompact: CTX is green with room to spare" "$c"
+case "$(lab_color "$P_CTX_NEAR")" in "${esc}[33m") c=0 ;; *) c=1 ;; esac
+assert "autocompact: CTX turns amber approaching the threshold" "$c"
+case "$(run_sl 120 "$P_CTX_OVER" | sed -n 4p)" in *"${esc}[1m${esc}[31mCTX"*) c=0 ;; *) c=1 ;; esac
+assert "autocompact: CTX goes bold red once past the threshold" "$c"
+# The override has to move the escalation, or it is only decorative.
+over=$(COLUMNS=120 HOME=/home/tester COLORTERM=truecolor TERM=xterm-256color NO_COLOR='' \
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 OTEL_RESOURCE_ATTRIBUTES='' \
+  bash "$SCRIPT" <<< "$P_CTX_CALM" | sed -n 4p)
+case "$over" in *"${esc}[33mCTX"* | *"${esc}[1m${esc}[31mCTX"*) c=0 ;; *) c=1 ;; esac
+assert "autocompact: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE moves the escalation" "$c"
+
+# ── Row 1 spans the full width (space-between, not packed left) ─────────────
+# A row ending in a long blank run reads as truncated; one reaching both edges
+# reads as laid out.
+# Slack is shared between the rules rather than packed hard left, but the share is
+# capped: unbounded space-between maroons a rule mid-pane on a sparse row, which
+# reads as a rendering fault rather than as layout. The cap is MAX_GROUP_GAP (16)
+# plus the rule's own two spaces, so no blank run inside row 1 may exceed 18.
+# Trailing pad is stripped first: that run is exactly what the cap creates, so
+# measuring it would assert against the feature. Drop the closing rule, then the
+# padding, and measure the blank runs that remain BETWEEN groups.
+interior() { sed 's/[^ ]*$//' | sed 's/ *$//' | grep -o ' *' | LC_ALL=C awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }'; }
+gap_normal=$(printf '%s' "$l2" | interior)
+assert "row 1: no interior blank run exceeds the capped gap" \
+  "$([ "$gap_normal" -le 18 ] && echo 0 || echo 1)"
+# ...and the same on a deliberately sparse row, the case the cap exists for:
+# two short groups in a wide pane.
+gap_sparse=$(run_sl 160 "$P_CTX_CALM" | strip_ansi | sed -n 2p | interior)
+assert "row 1: a sparse row in a wide pane is capped, not stretched" \
+  "$([ "$gap_sparse" -le 18 ] && echo 0 || echo 1)"
+
+# Groups really are divided by a rule, and the rule really is Gnar orange — the
+# separator and the frame share that colour, so asserting the glyph alone would
+# pass on a plain pipe.
+row1_inner=$(printf '%s' "$l2" | sed 's/^..//; s/..$//')
+case "$row1_inner" in *'│'*) c=0 ;; *) c=1 ;; esac
+assert "row 1: groups are divided by a vertical rule" "$c"
+case "$(printf '%s' "$out_color" | sed -n 2p)" in *"${esc}[38;2;181;110;58m│"*) c=0 ;; *) c=1 ;; esac
+assert "row 1: the dividing rule is burnt Gnar orange" "$c"
+
+# ── Shed order ───────────────────────────────────────────────────────────────
+# Cheapest loss first. The derived burn goes before the total it is derived from;
+# invert that and a narrow pane keeps the number you can recompute and drops the
+# one you cannot.
+seen_shed=0 kept_total=1
+for w in 34 36 38 40 42 44 48 52 56 60; do
+  line=$(run_sl "$w" "$P_COST" | strip_ansi | sed -n 2p)
+  case "$line" in *'/h'*) continue ;; esac
+  seen_shed=1
+  case "$line" in *'12.34'*) ;; *) kept_total=0 ;; esac
+done
+assert "shed: a width where the burn sheds was exercised" "$((1 - seen_shed))"
+assert "shed: shedding the burn never takes the total with it" "$((1 - kept_total))"
+
+# The output style is the first text cell to go, but the effort tier must outlive
+# it: effort changes how the session behaves, a style name only says how it reads.
+style_first=1
+for w in 60 64 68 72 76 80 84 88; do
+  line=$(run_sl "$w" "$P_NORMAL" | strip_ansi | sed -n 2p)
+  case "$line" in *'Explanatory'*) continue ;; esac
+  case "$line" in *'Hi'*) ;; *) style_first=0 ;; esac
+done
+assert "shed: effort outlives the output style" "$((1 - style_first))"
+
+# ── Colour behaviour ─────────────────────────────────────────────────────────
 case "$out_color" in *"${esc}["*) c=0 ;; *) c=1 ;; esac
 assert "color: emits ANSI by default" "$c"
 
-out_nocolor=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 bash "$SCRIPT" <<< "$P_NORMAL")
+out_nocolor=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 OTEL_RESOURCE_ATTRIBUTES='' \
+  bash "$SCRIPT" <<< "$P_NORMAL")
 case "$out_nocolor" in *"${esc}["*) c=1 ;; *) c=0 ;; esac
 assert "NO_COLOR: emits no ANSI" "$c"
-# ...and the plain content still renders (bar fill + a known token present).
-case "$out_nocolor" in *"420k/1M"*) c=0 ;; *) c=1 ;; esac
-assert "NO_COLOR: content intact" "$c"
+c=1
+case "$out_nocolor" in *'╭─'*) case "$out_nocolor" in *'CTX'*) case "$out_nocolor" in *'420k/1M'*) c=0 ;; esac ;; esac ;; esac
+assert "NO_COLOR: the frame and every readout still render" "$c"
+nc_bad=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || nc_bad=1; done <<< "$(printf '%s\n' "$out_nocolor" | vislen)"
+assert "NO_COLOR: geometry is unchanged" "$([ -z "$nc_bad" ] && echo 0 || echo 1)"
 
-# Non-truecolor terminals get the 256-color ramp (38;5;) not truecolor (38;2;).
-out_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color bash "$SCRIPT" <<< "$P_NORMAL")
-case "$out_256" in *"${esc}[38;5;"*) c=0 ;; *) c=1 ;; esac
-assert "256-color: uses indexed ramp" "$c"
+out_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color \
+  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL")
 case "$out_256" in *"${esc}[38;2;"*) c=1 ;; *) c=0 ;; esac
-assert "256-color: no truecolor escapes" "$c"
+assert "256-color: no truecolor escapes without COLORTERM" "$c"
+case "$out_256" in *"${esc}[38;5;"*) c=0 ;; *) c=1 ;; esac
+assert "256-color: falls back to the indexed ramp" "$c"
 
-# Must always exit 0 — in BOTH 7d states (the trailing conditional is a trap).
-run_sl 120 "$P_NORMAL" > /dev/null
-assert "exit 0 when 7d hidden" "$?"
-run_sl 120 "$P_SEVEN_BINDING" > /dev/null
-assert "exit 0 when 7d shown" "$?"
+# The three meters must be distinguishable by hue — with one shared texture it is
+# the only thing left telling them apart.
+hues=$(printf '%s' "$out_color" | sed -n 4p | grep -o "${esc}\[38;2;[0-9;]*m" | sort -u | wc -l | tr -d ' ')
+assert "meters: three distinct fill hues on the usage row" "$([ "$hues" -ge 3 ] && echo 0 || echo 1)"
 
-# ── Per-row bar vocabulary (glyph, then hue) ─────────────────────────────────
-# Each bar row has its own fill+track pair AND its own gradient family. The
-# goldens catch the glyphs (they survive ANSI-stripping) but are blind to every
-# hue, so the ramps need presence/absence assertions here or they are untested.
-#
-# P_SEVEN_BINDING renders all three rows: CTX 20%, 5h 10%, 7d 60%.
-bar_line() { # bar_line <label> — the ANSI-stripped bar row for that label
-  run_sl 120 "$P_SEVEN_BINDING" | strip_ansi | grep "^$1"
-}
-raw_line() { # raw_line <n> — bar row n (1=CTX, 2=5h, 3=7d) with escapes intact
-  run_sl 120 "$P_SEVEN_BINDING" | sed -n "$((n_off + $1))p"
-}
-n_off=1           # line 1 is the identity row; the bars follow it
-PIP_MARKER_CH='|' # must match PIP_MARKER in statusline.sh
+# ── Robustness: a statusline must never fail ────────────────────────────────
+COLUMNS=120 bash "$SCRIPT" <<< '{}' > /dev/null 2>&1
+assert "exit: an empty payload still exits 0" "$?"
+COLUMNS=120 bash "$SCRIPT" <<< 'not json at all' > /dev/null 2>&1
+assert "exit: malformed input still exits 0" "$?"
+COLUMNS=120 bash "$SCRIPT" < /dev/null > /dev/null 2>&1
+assert "exit: empty stdin still exits 0" "$?"
+err=$(COLUMNS=120 bash "$SCRIPT" <<< 'not json' 2>&1 > /dev/null)
+assert "exit: nothing is written to stderr" "$([ -z "$err" ] && echo 0 || echo 1)"
 
-# Glyphs: every row must show its own pair, and NOT another row's fill.
-glyph_bad=0
-case "$(bar_line CTX)" in *'~'*'.'*) ;; *) glyph_bad=1 ;; esac
-case "$(bar_line CTX)" in *'#'* | *':'*) glyph_bad=1 ;; esac
-case "$(bar_line '5h')" in *'#'*'-'*) ;; *) glyph_bad=1 ;; esac
-case "$(bar_line '5h')" in *'~'* | *':'*) glyph_bad=1 ;; esac
-case "$(bar_line '7d')" in *':'*'_'*) ;; *) glyph_bad=1 ;; esac
-case "$(bar_line '7d')" in *'#'* | *'~'*) glyph_bad=1 ;; esac
-assert "bars: each row uses only its own fill/track glyph pair" "$glyph_bad"
-
-# The glyph distinction must survive NO_COLOR — that is the whole reason the rows
-# differ by shape and not by hue alone.
-out_nc_bars=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 OTEL_RESOURCE_ATTRIBUTES='' \
-  bash "$SCRIPT" <<< "$P_SEVEN_BINDING")
-nc_bad=0
-case "$out_nc_bars" in *'~'*) ;; *) nc_bad=1 ;; esac
-case "$out_nc_bars" in *':'*) ;; *) nc_bad=1 ;; esac
-case "$out_nc_bars" in *'#'*) ;; *) nc_bad=1 ;; esac
-assert "bars: all three fill glyphs present under NO_COLOR" "$nc_bad"
-
-# Truecolor: the three families share one grey origin (74,79,92) and diverge to
-# their own hues.
-tc=$(run_sl 120 "$P_SEVEN_BINDING")
-ramp_bad=0
-case "$tc" in *"${esc}[38;2;74;79;92m"*) ;; *) ramp_bad=1 ;; esac
-assert "ramps: all families start from the shared grey origin" "$ramp_bad"
-
-# Per-row hue family, classified from the ACTUAL rendered colors rather than by
-# matching hardcoded triples (which would break on any ramp retune while proving
-# nothing about hue). Take the most saturated color on the row and name its
-# family by channel order: warm = R>=G>=B, purple = B>R>G, blue = B>G>R.
-#
-# The pip and threshold colors are excluded BY VALUE, leaving only bar fill. An
-# earlier version filtered on "appears >=3 times" instead, which happened to work
-# at COLUMNS=120 but silently depended on the bar being ~47+ cells wide: narrow the
-# pane and nothing qualifies, every row classifies as "none", and the assertion
-# fails blaming hue. Excluding known colors has no such hidden precondition.
-#
-# This needs a payload where all three bars are actually FULL: at 20% fill a bar
-# never leaves the shared grey origin, so a low-fill fixture cannot distinguish
-# the families and would assert nothing.
-P_FULL_BARS='{'"$DIR"',"context_window":{"used_percentage":100,"total_input_tokens":200000,"context_window_size":200000},"model":{"display_name":"Sonnet 5"},"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":100,"resets_at":'"$FAR_FUTURE"'}}}'
-# MARKER, MARKER_7D, AUTOCOMPACT, PROJ — every non-fill color a bar row can emit.
-PIP_RGBS='96;200;255 255;95;175 255;128;0 255;210;80'
-# hue_family <bar-row-n> — prints warm | purple | blue | none
-hue_family() {
-  run_sl 120 "$P_FULL_BARS" | sed -n "$((n_off + $1))p" |
-    grep -o '38;2;[0-9]*;[0-9]*;[0-9]*' | sed 's/38;2;//' | sort -u |
-    awk -v pips="$PIP_RGBS" '
-         BEGIN { n = split(pips, p, " "); for (i = 1; i <= n; i++) skip[p[i]] = 1 }
-         !($0 in skip) {
-           split($0, c, ";"); r = c[1]; g = c[2]; b = c[3]
-           mx = r; if (g > mx) mx = g; if (b > mx) mx = b
-           mn = r; if (g < mn) mn = g; if (b < mn) mn = b
-           if (mx - mn > best) { best = mx - mn; br = r; bg = g; bb = b }
-         }
-         END {
-           if (best == 0) { print "none"; exit }
-           if (br >= bg && bg >= bb) print "warm"
-           else if (bb > br && br > bg) print "purple"
-           else if (bb > bg && bg > br) print "blue"
-           else print "other"
-         }'
-}
-hue_bad=0
-[ "$(hue_family 1)" = "purple" ] || hue_bad=1
-[ "$(hue_family 2)" = "warm" ] || hue_bad=1
-[ "$(hue_family 3)" = "blue" ] || hue_bad=1
-assert "ramps: CTX purple, 5h warm, 7d blue (classified from output)" "$hue_bad"
-
-# The clock pip must not collide with its own row's ramp. 7d is blue-ramped, so its
-# pip is pink (#ff5faf); reusing the 5h blue pip there measured dE ~6 against the
-# blue fill — near-invisible — and that is the regression this guards.
-#
-# Matched as "color escape immediately followed by the marker glyph", which tests
-# the PIP specifically. Scanning the whole row instead would be wrong now that the
-# "time left" text is deliberately MARKER blue on both rows: blue appears on the 7d
-# row legitimately, just never on its pip.
-five_raw=$(raw_line 2)
-seven_raw=$(raw_line 3)
-pip_bad=0
-printf '%s' "$seven_raw" | grep -qF "${esc}[38;2;255;95;175m${PIP_MARKER_CH}" || pip_bad=1
-printf '%s' "$five_raw" | grep -qF "${esc}[38;2;96;200;255m${PIP_MARKER_CH}" || pip_bad=1
-printf '%s' "$seven_raw" | grep -qF "${esc}[38;2;96;200;255m${PIP_MARKER_CH}" && pip_bad=1
-assert "pips: 7d clock is pink, 5h clock is blue, neither leaks" "$pip_bad"
-
-# 256-color: three distinct indexed ramps, or the tier system vanishes for every
-# non-truecolor terminal. Read the ramps from source rather than diffing the
-# rendered index sets per row.
-#
-# Diffing rendered rows looks stronger but does not discriminate at all: each row's
-# set also carries that row's own pip index (208 amber / 39 blue / 205 pink) and the
-# rows render at different fill depths, so the sets differ even when all three
-# families are literally the same ramp. Verified — pointing ctx and 7d at the warm
-# indices left that version of this assertion green, so the path the comment above
-# calls "NOT optional" was in fact unguarded.
-ramp_indices() { sed -n "s/^_grad256_$1='\([^']*\)'.*/\1/p" "$SCRIPT"; }
-r_warm=$(ramp_indices warm)
-r_ctx=$(ramp_indices ctx)
-r_7d=$(ramp_indices 7d)
-idx_bad=0
-[ -z "$r_warm" ] && idx_bad=1
-[ -z "$r_ctx" ] && idx_bad=1
-[ -z "$r_7d" ] && idx_bad=1
-[ "$r_warm" = "$r_ctx" ] && idx_bad=1
-[ "$r_warm" = "$r_7d" ] && idx_bad=1
-[ "$r_ctx" = "$r_7d" ] && idx_bad=1
-assert "256-color: three distinct indexed ramps, one per family" "$idx_bad"
-
-# ...and each row must actually RENDER indexed colors, which the source-level check
-# above deliberately says nothing about.
-idx_rendered() { # idx_rendered <n> — 256-color indices on bar row n
-  COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color NO_COLOR='' \
-    OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_SEVEN_BINDING" |
-    sed -n "$((n_off + $1))p" | grep -o '38;5;[0-9]*' | sed 's/38;5;//' | sort -un | tr '\n' ' '
-}
-render_bad=0
-for _n in 1 2 3; do
-  [ -n "$(idx_rendered "$_n")" ] || render_bad=1
-done
-assert "256-color: every bar row renders indexed colors" "$render_bad"
-
-# All three families open on the SAME index, so the shared grey origin holds off
-# truecolor too. This was false when warm opened on 60 (#5f5f87, blue-violet) while
-# the new families opened on 59 (#5f5f5f) — an empty 5h bar was blue where the
-# others were grey, contradicting the comments, CLAUDE.md and the README.
-o_warm=${r_warm%% *}
-o_ctx=${r_ctx%% *}
-o_7d=${r_7d%% *}
-origin_bad=0
-[ "$o_warm" = "$o_ctx" ] || origin_bad=1
-[ "$o_warm" = "$o_7d" ] || origin_bad=1
-assert "256-color: all families share one grey origin index" "$origin_bad"
-
-# A hand-picked index that dips *darker* partway along its ramp makes the fill stop
-# reading as a level, and nothing else catches it: the goldens are ANSI-stripped and
-# the truecolor path uses entirely different values. Resolve each index through the
-# xterm-256 color cube and assert luminance never decreases.
-#
-# `warm` is exempt: past its origin it walks a hue path (teal → magenta → red →
-# amber) that dips at 96 and again at 202, predating the per-row families.
-ramp_monotonic() { # 0 when luminance never decreases across the ramp
-  printf '%s\n' "$1" | awk '
-    function lin(c) { c = c / 255; return (c <= 0.03928) ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4 }
-    function lum(r, g, b) { return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) }
-    BEGIN { split("0 95 135 175 215 255", L, " "); bad = 1 }
-    {
-      bad = 0
-      prev = -1
-      for (i = 1; i <= NF; i++) {
-        x = $i + 0 # force numeric: a stray token would otherwise compare as a string
-        if (x < 16 || x > 255) { bad = 1; break } # ramps use the cube, not system colors
-        if (x >= 232) { v = 8 + (x - 232) * 10; r = v; g = v; b = v } else {
-          n = x - 16
-          r = L[int(n / 36) + 1]; g = L[int(n / 6) % 6 + 1]; b = L[n % 6 + 1]
-        }
-        cur = lum(r, g, b)
-        if (cur < prev - 0.000000001) bad = 1
-        prev = cur
-      }
-    }
-    END { exit bad }
-  '
-}
-mono_bad=0
-ramp_monotonic "$r_ctx" || mono_bad=1
-ramp_monotonic "$r_7d" || mono_bad=1
-assert "256-color: new ramps ascend in luminance (no dark dip mid-bar)" "$mono_bad"
-
-# ── Width discipline: no line may exceed COLUMNS ─────────────────────────────
-# The bars stretch to fill the row, so the width math must reserve room for each
-# line's *trailing* text (the CTX token/cache/AC/200k+ readout is the widest and
-# once ran the bar off the right edge). This is the regression guard for that:
-# render at many widths, incl. a worst-case CTX payload, and fail if the visible
-# (ANSI-stripped) width of ANY line exceeds COLUMNS. Runs in the non-git temp dir
-# so line 1 stays short and the bar lines are what's under test.
-#
-# Floor at 60 cols: MIN_PIP_COUNT keeps the bar readable (>=12 pips) rather than
-# collapsing it, so a very narrow pane whose fixed readout is itself wider than
-# the pane will still overflow by design — that's the readable-bar backstop, not
-# a width-math bug. 60 is the narrowest width the snapshot cases exercise.
-P_WIDE='{'"$DIR"',"context_window":{"used_percentage":92,"total_input_tokens":185000,"context_window_size":200000,"current_usage":{"cache_read_input_tokens":185000}},"exceeds_200k_tokens":true,"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":63,"resets_at":'"$FAR_FUTURE"'},"seven_day":{"used_percentage":80,"resets_at":'"$FAR_FUTURE"'}}}'
-widest_line() { awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }'; }
-overflow=0
-for pw in "$P_NORMAL" "$P_AUTOCOMPACT" "$P_WIDE"; do
-  for w in 60 80 100 120 160 200; do
-    max=$(run_sl "$w" "$pw" | strip_ansi | widest_line)
-    [ "$max" -gt "$w" ] && overflow=1
-  done
-done
-assert "width: no line exceeds COLUMNS (all payloads/widths)" "$overflow"
-
-# ── Long-branch truncation (git) ────────────────────────────────────────────
+# ── Git fixture: the branch and its truncation ──────────────────────────────
 GITREPO=$(mktemp -d)
-# core.hooksPath=/dev/null + --no-verify keep any globally-configured hooks
-# (e.g. gitleaks) from firing and leaking output into the test run.
 (
   set -e
   cd "$GITREPO"
@@ -364,145 +324,57 @@ GITREPO=$(mktemp -d)
     commit -q --no-verify -m init
 ) > /dev/null 2>&1
 fixture_st=$?
-# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
-# that is the left operand of ||, and without it the subshell's status is just
-# its last command's — so that guard could never fire and the asserts below it
-# went vacuous. Capture the status instead.
+# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command that
+# is the left operand of ||, so that guard could never fire and the asserts below
+# would go vacuous. Capture the status instead.
 if [ "$fixture_st" -ne 0 ]; then
   printf 'FAIL     git fixture setup (exit %s)\n' "$fixture_st"
   FAIL=$((FAIL + 1))
+else
+  cd "$GITREPO" || exit 2
+  P_GIT='{"workspace":{"current_dir":"/work/proj/claude-statusline"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+  snapshot panel-git 120 "$P_GIT"
+
+  g2=$(run_sl 120 "$P_GIT" | strip_ansi | sed -n 2p)
+  case "$g2" in *'@feature/some-really-long-branch-name-goes-here'*) c=0 ;; *) c=1 ;; esac
+  assert "git: the branch renders whole, with its @ sigil, when it fits" "$c"
+  bw=$(printf '%s' "$g2" | tr -cd '@' | wc -c | tr -d ' ')
+  assert "git: exactly one branch sigil renders" "$([ "$bw" -eq 1 ] && echo 0 || echo 1)"
+
+  # Truncation is a last resort and proportionate: the name gives back the
+  # overflow and no more, so a pane holding most of a branch shows most of it
+  # rather than jumping to a fixed stub.
+  mid=$(run_sl 64 "$P_GIT" | strip_ansi | sed -n 2p)
+  case "$mid" in *'..'*) c=0 ;; *) c=1 ;; esac
+  assert "git: a branch too long for the pane is middle-ellipsized" "$c"
+  lw=$(printf '%s' "$g2" | sed 's/ .*//' | vislen)
+  lm=$(printf '%s' "$mid" | sed 's/ .*//' | vislen)
+  assert "git: branch length is monotonic in pane width" "$([ "$lw" -ge "$lm" ] && echo 0 || echo 1)"
 fi
-cd "$GITREPO" || exit 2
-# Payload supplies a stable title dir; git supplies the (long) branch.
-P_LONGBRANCH='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-snapshot longbranch-trunc 100 "$P_LONGBRANCH"
 
-# ── Repo title: owner/name (git) ─────────────────────────────────────────────
-# Claude Code's structured workspace.repo payload is the preferred source for the
-# title, and it's what makes it owner/name rather than a bare name. Snapshotted
-# while the fixture repo is still clean, so the title is the only moving part.
-P_REPO='{"workspace":{"current_dir":"/work/proj/claude-statusline","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-snapshot repo-title 100 "$P_REPO"
+cd "$NONGIT" || exit 2
 
-# ── Line 1 hard-bound + wrap (git, dirty, long branch) ───────────────────────
-# Dirty the repo so line 1 carries the git group (branch + counters) and the
-# session group (lines changed); with the long branch that's wider than a narrow
-# pane, this exercises the wrap to a continuation line. Line 1 must never exceed
-# COLUMNS at any width, and the 60-col snapshot locks the wrapped layout — plus
-# the invariant that branch and counters share ONE bracket.
-: > untracked.txt    # -> "1 untracked"
-echo change >> f.txt # -> "1 modified" (unstaged)
-P_DIRTY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_lines_added":120,"total_lines_removed":45}}'
-l1_overflow=0
-for w in 60 80 100 120 160; do
-  max=$(run_sl "$w" "$P_DIRTY" | strip_ansi | widest_line)
-  [ "$max" -gt "$w" ] && l1_overflow=1
-done
-assert "width: line 1 hard-bounds (git dirty, long branch)" "$l1_overflow"
-snapshot line1-wrap 60 "$P_DIRTY"
-
-# ── Line 1 must fit the USABLE row, and groups must shed ─────────────────────
-# Two gaps the assertion above cannot close:
-#
-#   1. It bounds line 1 by COLUMNS, but line 1's real budget is COLUMNS minus
-#      CHROME_MARGIN (8) — overrunning the margin re-triggers the very wrap that
-#      margin exists to prevent, while staying under COLUMNS.
-#   2. P_DIRTY is the NARROWEST form of the two groups that got wider when
-#      per-field brackets merged into per-concept ones: no session name, no cost,
-#      no worktree, and only "?1 !1".
-#
-# So this bounds the line-1 block by COLUMNS-8 against a worst case: a long
-# session name + 5-digit churn + a 6-figure cost sharing ONE bracket, and a long
-# branch + worktree + counters sharing another. A group is unsplittable (the
-# packer relocates whole segments, it never breaks one open), so gflush has to
-# shed members — the same path that sheds counters from an over-wide git group.
-# Scoped to the line-1 block (everything before the CTX line) so the
-# MIN_PIP_COUNT bar floor at narrow widths can't false-fail it.
-# Derived from the script, not restated: hardcoding 8 here would silently check
-# the wrong budget if CHROME_MARGIN's default ever changed. run_sl pins
-# CLAUDE_STATUSLINE_CHROME_MARGIN='' so the script's own default is what applies.
-L1_MARGIN=$(awk -F= '/^CHROME_MARGIN=/ {print $2; exit}' "$SCRIPT")
-case "$L1_MARGIN" in '' | *[!0-9]*)
-  printf 'FAIL     could not read CHROME_MARGIN default\n'
-  FAIL=$((FAIL + 1))
-  L1_MARGIN=8
-  ;;
-esac
-line1_block() { awk '/^CTX /{exit} {print}'; }
-# worktree.name is set deliberately: without it the git group's first member is
-# just "@branch", and the widest form — "@branch/worktree", which gflush can never
-# shed because it is the first member — would go unmeasured.
-P_L1_MAX='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name-here"},"session_name":"refactor-the-whole-statusline-experiment","context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":123456.78,"total_duration_ms":600000,"total_lines_added":98765,"total_lines_removed":43210}}'
-#
-# The narrow end (24, 26) is load-bearing: branch_max's 14-col floor can exceed
-# the row itself there, and it caps every group's FIRST member — the one gflush
-# can never shed — so an unclamped floor overran the row on that member alone
-# (19 cols into a 14-col budget at COLUMNS=22). Sweeping only 60+ missed it.
-#
-# P_L1_COST_ONLY puts the cost ALONE in the session group, making it that group's
-# first member — the one gflush can never shed. That is the ordinary shape of a
-# session that has spent money without editing files, and a hole neither other
-# payload reaches (P_DIRTY's churn is only 10 columns and shields the cost behind
-# it). The cost cell rendered 19 columns into a 16-column budget before the
-# per-hour burn learned to drop itself.
-P_L1_COST_ONLY='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
-# 6-digit churn with no name: churn leads the group, and digits are the one member
-# that cannot be ellipsized (a truncated number reads as a real one), so it
-# abbreviates instead. Also guards the marker: at COLUMNS=26 an over-wide first
-# member made the best-effort " .." gate suppress the marker on a real drop.
-P_L1_CHURN_BIG='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_lines_added":123456,"total_lines_removed":654321}}'
-l1_budget_overflow=0
-for pw in "$P_DIRTY" "$P_L1_MAX" "$P_L1_COST_ONLY" "$P_L1_CHURN_BIG"; do
-  for w in 24 26 30 40 60 80 100 120 160 200; do
-    max=$(run_sl "$w" "$pw" | strip_ansi | line1_block | widest_line)
-    [ "$max" -gt $((w - L1_MARGIN)) ] && l1_budget_overflow=1
-  done
-done
-assert "width: line 1 fits COLUMNS-CHROME_MARGIN (worst-case groups)" "$l1_budget_overflow"
-
-# ...and the elision is visible rather than a silent drop: locks the '..' marker.
-snapshot line1-shed 60 "$P_L1_MAX"
-
-# ── All seven counters: the git group's squeeze path ────────────────────────
-# The fixtures above carry only "?1 !1", so ct_width stays 6 and the name-squeeze
-# block never runs — the git group's core logic had ZERO coverage, which is how a
-# silent counter drop shipped. This fixture carries all seven at once, which needs
-# a real upstream (ahead/behind), a stash, and a conflicted merge:
-#
-#   x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
-#
-# That order is the invariant the assertions below enforce: it is most-urgent
-# first, and since gflush sheds from the tail it is also least-urgent-lost-first.
-#
-# The invariant under test is priority, not just width: inside one unsplittable
-# bracket a counter is atomic data while the names ellipsize, so EVERY counter
-# must survive at every width — the branch shrinks, then the worktree suffix is
-# dropped, before a counter is ever shed. A dropped ^N/vN reads as "in sync with
-# upstream" when you are not, which is worse than a truncated name.
+# ── Counters: every working-tree sigil, in its own colour ──────────────────
 COUNTERS=$(mktemp -d) BARE=$(mktemp -d) CLONE=$(mktemp -d)
-trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$TELEMREPO"' EXIT
 tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
 (
-  set -e # without this the subshell's status is its LAST command's, so the
-  # `|| { FAIL ... }` guard below never fires and the asserts go vacuous
+  set -e
   git init -q --bare "$BARE/claude-statusline.git"
   cd "$COUNTERS" || exit 2
   git init -q
-  git checkout -q -b feature/some-really-long-branch-name
+  git checkout -q -b work
   for i in 1 2 3 4; do echo "l$i" > "f$i.txt"; done
   tg add .
   tg commit -q --no-verify -m init
   tg remote add origin "$BARE/claude-statusline.git"
   tg push -q -u origin HEAD
-  # ahead: local commits the remote hasn't seen
   for i in 1 2 3; do
     echo "a$i" >> f1.txt
     tg commit -q --no-verify -am "ahead$i"
   done
-  # behind: a second clone pushes, then we fetch (never merge those)
   git clone -q "$BARE/claude-statusline.git" "$CLONE/c"
   cd "$CLONE/c" || exit 2
-  git checkout -q feature/some-really-long-branch-name
+  git checkout -q work
   for i in 1 2; do
     echo "r$i" >> f4.txt
     tg commit -q --no-verify -am "remote$i"
@@ -510,233 +382,86 @@ tg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hook
   tg push -q origin HEAD
   cd "$COUNTERS" || exit 2
   tg fetch -q origin
-  # stash x2
-  echo s1 > f2.txt && tg stash push -q -m s1
-  echo s2 > f2.txt && tg stash push -q -m s2
-  # conflict: merge the diverged upstream and leave the UU in the index
-  echo mine >> f4.txt
-  tg commit -q --no-verify -am mine
-  # Expected to exit non-zero — the conflict IS the point, and under set -e it
-  # would otherwise abort the fixture before the staged/modified/untracked steps.
-  tg merge -q origin/feature/some-really-long-branch-name || true
-  # staged, modified, untracked
-  echo st > f2.txt && tg add f2.txt
-  echo mo >> f3.txt
-  : > untracked1.txt
-  : > untracked2.txt
+  echo s > f1.txt
+  tg stash -q
+  echo mod >> f2.txt
+  echo stg >> f3.txt
+  tg add f3.txt
+  : > untracked.txt
 ) > /dev/null 2>&1
-fixture_st=$?
-# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
-# that is the left operand of ||, and without it the subshell's status is just
-# its last command's — so that guard could never fire and the asserts below it
-# went vacuous. Capture the status instead.
-if [ "$fixture_st" -ne 0 ]; then
-  printf 'FAIL     all-counters git fixture setup (exit %s)\n' "$fixture_st"
+ct_st=$?
+if [ "$ct_st" -ne 0 ]; then
+  printf 'FAIL     counters fixture setup (exit %s)\n' "$ct_st"
   FAIL=$((FAIL + 1))
+else
+  cd "$COUNTERS" || exit 2
+  P_CT='{"workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_lines_added":120,"total_lines_removed":45}}'
+  snapshot panel-counters 140 "$P_CT"
+  # Everything at once. THE README'S EXAMPLE PANEL IS THIS FILE, verbatim — so a
+  # docs drift becomes a test failure instead of something nobody notices.
+  P_FULL='{"workspace":{"current_dir":"/work/proj/claude-statusline","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_lines_added":120,"total_lines_removed":45},'"$RL"'}'
+  snapshot panel-full 120 "$P_FULL"
+  ct=$(run_sl 140 "$P_CT" | strip_ansi | sed -n 2p)
+  miss=""
+  for sig in '^3' 'v2' '!1' '+1' '?1' '*1'; do
+    case "$ct" in *"$sig"*) ;; *) miss="$miss $sig" ;; esac
+  done
+  if [ -n "$miss" ]; then printf 'missing sigils:%s\n' "$miss"; fi
+  assert "counters: ahead/behind/unstaged/staged/untracked/stash all render" \
+    "$([ -z "$miss" ] && echo 0 || echo 1)"
+  case "$ct" in *'+120/-45'*) c=0 ;; *) c=1 ;; esac
+  assert "counters: this session's churn renders beside the tree state" "$c"
+  # Per-sigil colour is the whole reason they are separate cells.
+  raw=$(run_sl 140 "$P_CT" | sed -n 2p)
+  c=1
+  case "$raw" in *"${esc}[33m!1"*) case "$raw" in *"${esc}[36m?1"*) c=0 ;; esac ;; esac
+  assert "counters: unstaged is yellow and untracked is cyan" "$c"
+  case "$raw" in *"${esc}[32m${esc}[1m+120"*) c=0 ;; *) c=1 ;; esac
+  assert "counters: churn additions render bold green" "$c"
 fi
-cd "$COUNTERS" || exit 2
 
-# Sanity-check the fixture itself: if it stopped producing all seven counters the
-# assertions below would pass vacuously (the bug this suite exists to catch).
-P_CT='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"worktree":{"name":"a-long-worktree-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-ct_line=$(run_sl 200 "$P_CT" | strip_ansi | line1_block)
-missing=""
-for sig in '*' x '?' '!' + '^' v; do
-  case "$ct_line" in *"$sig"[0-9]*) ;; *) missing="$missing$sig" ;; esac
-done
-[ -n "$missing" ] && printf 'note: fixture missing counters: %s\n' "$missing"
-assert "fixture: all seven counters present at full width" "$([ -z "$missing" ] && echo 0 || echo 1)"
+cd "$NONGIT" || exit 2
 
-# Two assertions, because "no counter is ever shed" is not achievable at every
-# width and claiming it would be a lie: seven counters are 21 columns on their
-# own, so at COLUMNS=30 (22 usable) they cannot fit beside even a floored branch
-# — something must go. What IS invariant is the ORDER things go in.
+# ── Coverage tag ─────────────────────────────────────────────────────────────
+# The chip reads "tagged" when the repo carries a project.name OTEL attribute and
+# "untagged" when it doesn't (so its usage lands in the dashboard as "(untagged)").
+# Detection mirrors the toolkit SessionStart hook, and every input it reads is
+# asserted here — live env, the repo's checked-in settings, its local override, a
+# settings file that exists but carries no tag (the one path that actually forks
+# jq), the opt-out, and the non-git case.
 #
-#   1. Down to COLUMNS=40, every counter survives (the names absorb it).
-#   2. At ANY width, a counter is shed only AFTER the names have already given up
-#      everything they can: no worktree suffix, and the branch at its 5-char
-#      floor. That is the priority rule itself, and it holds where (1) can't.
-ct_dropped=0 ct_overflow=0
-for w in 40 44 48 57 60 80 120; do
-  out=$(run_sl "$w" "$P_CT" | strip_ansi | line1_block)
-  for sig in '*' x '?' '!' + '^' v; do
-    case "$out" in *"$sig"[0-9]*) ;; *) ct_dropped=1 ;; esac
-  done
-  max=$(printf '%s\n' "$out" | widest_line)
-  [ "$max" -gt $((w - L1_MARGIN)) ] && ct_overflow=1
-done
-assert "git group: no counter shed down to COLUMNS=40 (all 7)" "$ct_dropped"
-assert "git group: line 1 fits its budget with all 7 counters" "$ct_overflow"
-
-# Priority rule at the widths where shedding IS forced: the names must be spent
-# first. Extract the branch member "@<branch>[/<wt>]" and require no "/" (the
-# worktree suffix dropped) and a branch at the 5-char floor whenever a counter
-# went missing.
-ct_priority=0 ct_forced=0
-for w in 24 26 30 34 36 38; do
-  out=$(run_sl "$w" "$P_CT" | strip_ansi | line1_block)
-  shed=0
-  for sig in '*' x '?' '!' + '^' v; do
-    case "$out" in *"$sig"[0-9]*) ;; *) shed=1 ;; esac
-  done
-  [ "$shed" -eq 0 ] && continue
-  ct_forced=1
-  bmem=$(printf '%s\n' "$out" | sed -n 's/.*\[@\([^] ]*\).*/\1/p' | head -1)
-  case "$bmem" in
-    *'/'*) ct_priority=1 ;; # worktree still shown while a counter was dropped
-  esac
-  [ "${#bmem}" -gt 5 ] && ct_priority=1 # branch not squeezed to its floor
-done
-assert "git group: names are spent before any counter is shed" "$ct_priority"
-assert "git group: the forced-shed widths are actually exercised" "$((1 - ct_forced))"
-
-# Locks the squeeze: at 40 the worktree suffix is gone but every counter remains.
-snapshot line1-counters 40 "$P_CT"
-
-# A SHORT worktree name must never be dropped while it still fits. The payload
-# above carries a 20-char name, so the budget maths was only ever exercised where
-# dropping was correct; sizing from the 5-col floor instead of the actual length
-# threw away a 2-char suffix with room to spare. Also asserts monotonicity: a
-# wider pane must never show LESS than a narrower one.
-P_CT_SHORTWT=${P_CT/\"name\":\"a-long-worktree-name\"/\"name\":\"wt\"}
-shortwt_dropped=0
-for w in 26 30 34 38 42 44 48 60 80; do
-  out=$(run_sl "$w" "$P_CT_SHORTWT" | strip_ansi | line1_block)
-  # Slack is measured on the GIT GROUP'S OWN line, not the widest line of the
-  # block: another group's continuation line is wider and would under-report the
-  # room actually available to this one.
-  gline=$(printf '%s\n' "$out" | grep '\[@' || true)
-  used=$(printf '%s\n' "$gline" | widest_line)
-  has=0
-  case "$out" in *'/wt'*) has=1 ;; esac
-  if [ "$has" -eq 0 ] && [ $((used + 3)) -le $((w - L1_MARGIN)) ]; then
-    shortwt_dropped=1
-    printf 'note: /wt dropped at COLUMNS=%s with %s cols used of %s\n' \
-      "$w" "$used" "$((w - L1_MARGIN))"
-  fi
-done
-assert "git group: a short worktree name is kept whenever it fits" "$shortwt_dropped"
-
-# Worktree visibility is NOT strictly monotonic, and asserting that it is would be
-# asserting something false. `need` is want_b + 1 + want_w, capped by branch_max
-# (cols/3) and wt_max (cols/5); at cols divisible by 15 BOTH caps step, so need
-# grows by 2 while avail grows by 1, and the suffix drops out for exactly one
-# column (shown at COLUMNS 52, gone at 53, back at 54 with a long branch + a
-# >=9-char worktree). Two progressions of period 3 and 5 collide every 15 columns,
-# so no choice of independent proportional caps avoids it; the alternatives trade
-# it for a 1-column dip in BRANCH length instead, which is the worse of the two
-# (the branch is the more informative cell, and its monotonicity is relied on
-# above).
-#
-# So assert the invariant that is true and still catches a real regression: the
-# suffix never vanishes for more than one consecutive column, and once the pane is
-# wide enough it stays. A permanent disappearance — the actual bug class — fails
-# here. Swept every column with a LONG worktree name, since a short one never lets
-# wt_max bind and so never reaches this path at all.
-# Runs of "not shown" at the narrow end are legitimate (it genuinely does not
-# fit), so only a gap appearing AFTER the suffix has started showing counts.
-P_CT_LONGWT=${P_CT/'"name":"a-long-worktree-name"'/'"name":"wt-abcd-ch"'}
-seen=0 gap=0 run=0
-# cols 36-58: consecutive columns, spanning the mod-15 point at cols 45.
-for w in $(seq 44 1 66); do
-  out=$(run_sl "$w" "$P_CT_LONGWT" | strip_ansi | line1_block)
-  if case "$out" in *'/wt'*) true ;; *) false ;; esac then
-    seen=1 run=0
-  elif [ "$seen" -eq 1 ]; then
-    run=$((run + 1))
-    [ "$run" -gt 1 ] && gap=1 && printf 'note: /wt missing for %s consecutive columns at COLUMNS=%s\n' "$run" "$w"
-  fi
-done
-assert "git group: worktree suffix never vanishes for >1 consecutive column" "$gap"
-assert "git group: the worktree suffix does appear at some swept width" "$((1 - seen))"
-
-# ── Repo title: owner from the origin remote (git, fallback path) ─────────────
-# Back to the long-branch fixture: the all-counters repo above already has an
-# origin (its bare upstream), so `git remote add` there would fail and these would
-# assert against the wrong repo.
-cd "$GITREPO" || exit 2
-# With no workspace.repo in the payload the owner comes from parsing origin, so the
-# two sources must agree. And the parse must stay conservative: a remote whose path
-# has no owner segment must not promote the *host* into that slot.
-git remote add origin https://github.com/TheGnarCo/claude-statusline.git 2> /dev/null
-case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'TheGnarCo/claude-statusline'*) c=0 ;; *) c=1 ;; esac
-assert "title: owner parsed from the origin remote" "$c"
-
-git remote set-url origin https://example.com/toplevel 2> /dev/null
-out_noowner=$(run_sl 100 "$P_DIRTY" | strip_ansi)
-case "$out_noowner" in *'example.com/'*) c=1 ;; *'toplevel'*) c=0 ;; *) c=1 ;; esac
-assert "title: ownerless remote falls back to the bare repo name" "$c"
-
-# Paths deeper than <owner>/<repo> are common (GitLab subgroups, Bitbucket's
-# /scm/<project>/<repo>). The owner is the segment immediately before the repo —
-# taking the first one promoted a prefix into the owner slot ("scm/myrepo").
-git remote set-url origin https://bitbucket.example.com/scm/PROJ/myrepo.git 2> /dev/null
-case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'PROJ/myrepo'*) c=0 ;; *) c=1 ;; esac
-assert "title: deep remote path takes the segment before the repo" "$c"
-
-git remote set-url origin https://gitlab.example.com/group/subgroup/proj.git 2> /dev/null
-case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'subgroup/proj'*) c=0 ;; *) c=1 ;; esac
-assert "title: subgroup remote uses the immediate namespace" "$c"
-
-# A trailing slash must not make the repo its own owner ("claude-statusline/
-# claude-statusline"): basename tolerates it, the segment parse would not.
-git remote set-url origin https://github.com/TheGnarCo/claude-statusline/ 2> /dev/null
-case "$(run_sl 100 "$P_DIRTY" | strip_ansi)" in *'TheGnarCo/claude-statusline'*) c=0 ;; *) c=1 ;; esac
-assert "title: trailing-slash remote still resolves the real owner" "$c"
-
-# Only an http(s) URL has a host segment to strip. A local-path remote (a sibling
-# clone) must not have a parent directory promoted into the owner slot.
-git remote set-url origin /Users/me/src/upstream 2> /dev/null
-out_localpath=$(run_sl 100 "$P_DIRTY" | strip_ansi)
-case "$out_localpath" in *'src/upstream'*) c=1 ;; *'upstream'*) c=0 ;; *) c=1 ;; esac
-assert "title: local-path remote yields no owner" "$c"
-
-# Same for a non-GitHub SSH remote, which the github.com rewrite leaves as git@host:path.
-git remote set-url origin git@gitlab.example.com:group/proj.git 2> /dev/null
-out_ssh=$(run_sl 100 "$P_DIRTY" | strip_ansi)
-case "$out_ssh" in *'group/proj'* | *':'*) c=1 ;; *'proj'*) c=0 ;; *) c=1 ;; esac
-assert "title: non-GitHub SSH remote yields no owner" "$c"
-git remote remove origin 2> /dev/null
-
-# ── Telemetry-tag chip (git) ─────────────────────────────────────────────────
-# The chip reads [telem tag] when the repo carries a project.name OTEL attribute and
-# [no telem tag] when it doesn't (so its usage lands in the dashboard as
-# "(untagged)"). Detection mirrors the toolkit SessionStart hook, and every input it
-# reads is asserted here — live env, the repo's checked-in settings, its local
-# override, a settings file that exists but carries no tag (the one path that
-# actually forks jq), the opt-out, and the non-git case. Both states are asserted
-# positively: an inverted test would pass on a chip that never renders at all. Its
-# own throwaway repo, so writing settings files can't perturb the untracked counts
-# the snapshot cases above pin.
+# Both states are asserted POSITIVELY on purpose: an inverted test would pass on a
+# chip that never renders at all, and this chip has to stay in agreement with a
+# hook in another repo — exactly the kind of agreement that rots quietly.
 TELEMREPO=$(mktemp -d)
 (cd "$TELEMREPO" && git init -q) > /dev/null 2>&1 || {
   printf 'FAIL     telem fixture setup\n'
   FAIL=$((FAIL + 1))
 }
 cd "$TELEMREPO" || exit 2
-P_TELEM='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-# chip_is <expected> — 0 when the rendered chip matches, 1 otherwise. "none" asserts
-# neither state rendered.
+P_TELEM='{"workspace":{"current_dir":"/work/proj/claude-statusline"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+
+# The tag lives in the TOP RULE, so that is where it is looked for.
 chip_is() {
-  local out
-  out=$(run_sl 120 "$P_TELEM" | strip_ansi)
-  case "$1:$out" in
-    'tagged:'*'[telem tag]'*) return 0 ;;
-    'untagged:'*'[no telem tag]'*) return 0 ;;
-    'none:'*'telem tag'*) return 1 ;;
+  local rule
+  rule=$(run_sl 120 "$P_TELEM" | strip_ansi | sed -n 1p)
+  case "$1:$rule" in
+    'tagged:'*' tagged '*) return 0 ;;
+    'untagged:'*' untagged '*) return 0 ;;
+    'none:'*'tagged'*) return 1 ;;
     'none:'*) return 0 ;;
   esac
   return 1
 }
 
 chip_is untagged
-assert "telem: [no telem tag] in a git repo with no attribute" "$?"
+assert "telem: untagged in a git repo with no attribute" "$?"
 
 mkdir -p "$TELEMREPO/.claude"
 TAG='{"env":{"OTEL_RESOURCE_ATTRIBUTES":"project.name=org/repo"}}'
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
 chip_is tagged
-assert "telem: [telem tag] when .claude/settings.json carries project.name" "$?"
+assert "telem: tagged when .claude/settings.json carries project.name" "$?"
 
 printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.json"
 chip_is untagged
@@ -744,40 +469,41 @@ assert "telem: settings.json without project.name still counts as untagged" "$?"
 
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
 chip_is tagged
-assert "telem: [telem tag] when settings.local.json carries project.name" "$?"
+assert "telem: tagged when settings.local.json carries project.name" "$?"
 
 # Claude Code merges settings.local.json OVER settings.json, so a local override
-# that replaces the attribute without a project.name really is untagged — the chip
-# must not keep reporting the repo file's tag.
+# that replaces the attribute without a project.name really is untagged.
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
 printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":"service.name=x"}}' > "$TELEMREPO/.claude/settings.local.json"
 chip_is untagged
 assert "telem: settings.local.json overrides the repo attribute" "$?"
 
-# ...but a local file that doesn't define the attribute must not clobber it either.
 printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.local.json"
 chip_is tagged
 assert "telem: an unrelated local override leaves the repo tag standing" "$?"
 
-# An EXPLICITLY emptied override is defined-but-empty, which clears the repo's tag.
-# `// ""` can't tell that from absent, and the chip stayed falsely green.
+# An EXPLICITLY emptied override is defined-but-empty, which clears the tag.
 printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":""}}' > "$TELEMREPO/.claude/settings.local.json"
 chip_is untagged
 assert "telem: an explicitly-emptied local override clears the tag" "$?"
 
-# A malformed settings.json must not mask a valid tag in the local override — one
-# jq run over both files aborts on the parse error and reports untagged, which is
-# why the detection reads them one at a time (as the hook does).
+# A malformed settings.json must not mask a valid tag in the local override.
 printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
 printf '%s\n' '{ not json' > "$TELEMREPO/.claude/settings.json"
 chip_is tagged
 assert "telem: malformed settings.json doesn't mask settings.local.json" "$?"
 
-# ...and a malformed file on its own is untagged, not a crash.
 rm -f "$TELEMREPO/.claude/settings.local.json"
 chip_is untagged
 assert "telem: malformed settings.json alone reads as untagged" "$?"
 rm -f "$TELEMREPO/.claude/settings.json"
+
+# Live env, no settings file — how a tagged repo actually renders under Claude
+# Code, which exports the merged attribute into the statusline's environment.
+out_tagged=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
+  OTEL_RESOURCE_ATTRIBUTES='project.name=org/repo' bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi | sed -n 1p)
+case "$out_tagged" in *' tagged '*) c=0 ;; *) c=1 ;; esac
+assert "telem: tagged when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
 
 # Both states link to the dashboard, so the OSC8 target must survive on each.
 for _st in '' 'project.name=org/repo'; do
@@ -787,290 +513,61 @@ for _st in '' 'project.name=org/repo'; do
   case "$out_link" in *'telem.thegnar.info'*) c=0 ;; *) c=1 ;; esac
   [ "$c" -ne 0 ] && break
 done
-assert "telem: chip links to the dashboard in both states" "$c"
-
-# Live env, no settings file at all — how a tagged repo actually renders under
-# Claude Code, which exports the attribute from settings into the statusline's env.
-out_tagged=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
-  OTEL_RESOURCE_ATTRIBUTES='project.name=org/repo' bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_tagged" in *'[telem tag]'*) c=0 ;; *) c=1 ;; esac
-assert "telem: [telem tag] when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
+assert "telem: the chip links to the dashboard in both states" "$c"
 
 out_optout=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
   CLAUDE_STATUSLINE_HIDE_TELEM=1 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_optout" in *'telem tag'*) c=1 ;; *) c=0 ;; esac
+case "$out_optout" in *'tagged'*) c=1 ;; *) c=0 ;; esac
 assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=1 suppresses the chip" "$c"
 
-# ...and =0 means SHOW. A bare -n test read any value as "hide", so the one spelling
-# that unambiguously means "don't hide" hid it.
+# Unset and 0 both mean "show" — a bare -n test would invert the 0 case.
 out_hide0=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
   CLAUDE_STATUSLINE_HIDE_TELEM=0 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_hide0" in *'no telem tag'*) c=0 ;; *) c=1 ;; esac
+case "$out_hide0" in *'untagged'*) c=0 ;; *) c=1 ;; esac
 assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=0 still shows the chip" "$c"
 
-# Outside a git repo there's no project to tag (the hook's first exit, mirrored).
+# Suppressing the chip must not disturb the frame.
+hide_bad=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || hide_bad=1; done <<< "$(printf '%s\n' "$out_optout" | vislen)"
+assert "telem: suppressing the chip leaves the geometry intact" "$([ -z "$hide_bad" ] && echo 0 || echo 1)"
+
 cd "$NONGIT" || exit 2
-chip_is none
-assert "telem: no chip at all outside a git repo" "$?"
+out_nongit=$(run_sl 120 "$P_NORMAL" | strip_ansi | sed -n 1p)
+case "$out_nongit" in *'tagged'*) c=1 ;; *) c=0 ;; esac
+assert "telem: no chip at all outside a git repo" "$c"
 
-# Widening the pane must never make any cell SHORTER — the previous check covered
-# worktree visibility but not branch length, and an all-or-nothing worktree drop
-# let COLUMNS 42->44 shorten the branch (10 chars -> the 5-char floor) as the
-# suffix reappeared. Total member length can't detect that (it GREW in that case,
-# 11 -> 15, while the branch halved), so the branch has to be isolated from the
-# "/worktree" suffix — which needs a branch carrying no slash of its own, or a
-# truncated "feature/..name" is indistinguishable from "branch/worktree".
-SLASHLESS=$(mktemp -d)
-trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$SLASHLESS"' EXIT
-(
-  set -e # see the note on the COUNTERS fixture: without it a failed git step
-  # leaves every render in a non-git dir, blen stays 0, and the monotonicity
-  # assert below reports ok while measuring nothing
-  cd "$SLASHLESS"
-  git init -q
-  git checkout -q -b averyveryverylongbranchnamewithnoslashes
-  : > f.txt
-  tg add f.txt
-  tg commit -q --no-verify -m init
-  : > untracked.txt
-  echo change >> f.txt
-) > /dev/null 2>&1
-fixture_st=$?
-# NOT `( ... ) || { ... }`: bash suppresses set -e inside a compound command
-# that is the left operand of ||, and without it the subshell's status is just
-# its last command's — so that guard could never fire and the asserts below it
-# went vacuous. Capture the status instead.
-if [ "$fixture_st" -ne 0 ]; then
-  printf 'FAIL     slashless-branch fixture setup (exit %s)\n' "$fixture_st"
-  FAIL=$((FAIL + 1))
-fi
-cd "$SLASHLESS" || exit 2
-
-# Prove the fixture renders a branch at all before measuring its length — the
-# COUNTERS fixture has its "all seven counters" assert for this; this one had
-# nothing, so a broken fixture would sweep 0-length branches and report ok.
-sane=$(run_sl 100 '{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}' | strip_ansi | line1_block | sed -n 's/.*\[@\([^]]*\)\].*/\1/p' | head -1)
-assert "fixture: slashless-branch fixture renders a branch" "$([ ${#sane} -ge 20 ] && echo 0 || echo 1)"
-
-branch_shrank=0
-# Step 4 rather than 1: a decrease anywhere shows up between whichever two sampled
-# widths bracket it, so subsampling still catches the regression this guards
-# (branch 10 -> 5 as the suffix reappeared) without paying for 77 renders, each of
-# which forks git several times. Sweeping every column here took the whole suite
-# from ~13s to ~86s. It now sits near 55s, most of it the all-counters fixture
-# setup and its renders rather than this sweep: the worktree-suffix check below does
-# need consecutive columns (a 1-column gap is legitimate, 2 is a bug), so it pays
-# for a bounded range rather than a step.
-for wtname in a-long-worktree-name wt; do
-  prev_len=0
-  for w in $(seq 24 4 84); do
-    out=$(run_sl "$w" "{\"workspace\":{\"current_dir\":\"/work/proj/x\"},\"worktree\":{\"name\":\"$wtname\"},\"context_window\":{\"used_percentage\":10,\"total_input_tokens\":20000,\"context_window_size\":200000},\"model\":{\"display_name\":\"Opus 4.8\"}}" |
-      strip_ansi | line1_block)
-    bmem=$(printf '%s\n' "$out" | sed -n 's/.*\[@\([^]]*\)\].*/\1/p' | head -1)
-    bmem=${bmem%% *}  # strip the counters, keep "branch[/wt]"
-    bonly=${bmem%%/*} # branch portion (the branch itself has no slash here)
-    blen=${#bonly}
-    if [ "$blen" -lt "$prev_len" ]; then
-      branch_shrank=1
-      printf 'note: branch shrank %s -> %s at COLUMNS=%s (wt=%s)\n' \
-        "$prev_len" "$blen" "$w" "$wtname"
-    fi
-    prev_len=$blen
-  done
-done
-assert "git group: branch length is monotonic in width" "$branch_shrank"
-cd "$COUNTERS" || exit 2
-
-# Display order is shed order, so a cell ordered ahead of the output style must
-# outlive it when the config group has to shed. Effort is the last such cell now
-# that the vim chip is gone; the style is set once and is what you can afford to
-# lose first.
-P_CFG_SHED='{"workspace":{"current_dir":"/work/proj/claude-statusline"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":1000000},"model":{"display_name":"Claude Opus 4.8 (1M context)"},"effort":{"level":"xhigh"},"output_style":{"name":"Explanatory"}}'
-# The guard must key on the CONFIG group's own elision, not on '..' anywhere in
-# the block: trunc_mid's ellipsis sits inside a truncated name and this fixture's
-# branch is always truncated, so a bare *'..'* matched every width and filtered
-# nothing. The shed marker is distinguishable — always a standalone " .." member
-# at the end of its bracket — so isolate the config bracket (the one carrying the
-# model name) and test that.
-cfg_lost=0 cfg_shed_seen=0
-for w in 40 44 48 52 56 60; do
-  out=$(run_sl "$w" "$P_CFG_SHED" | strip_ansi | line1_block)
-  cfg=$(printf '%s\n' "$out" | tr ']' '\n' | grep 'Claude' | tail -1)
-  case "$cfg" in *' ..') ;; *) continue ;; esac # only widths where CONFIG sheds
-  cfg_shed_seen=1
-  case "$cfg" in *XHi*) ;; *) cfg_lost=1 ;; esac
-done
-assert "config group: effort outlives output style when shedding" "$cfg_lost"
-assert "config group: a real config-group shed was exercised" "$((1 - cfg_shed_seen))"
-
-# A group must still be ABLE to mark an elision. The line1-shed golden used to lock
-# this, but a shed there is width-dependent and the layout moved, so assert the
-# marker directly rather than lose the coverage. The git group is the one that
-# sheds for this fixture: six-figure churn sits at its tail, behind the branch and
-# the counters.
-git_marked=0
-for w in 24 26 30; do
-  ggroup=$(run_sl "$w" "$P_L1_CHURN_BIG" | strip_ansi | line1_block |
-    tr ']' '\n' | grep '@' | tail -1)
-  case "$ggroup" in *' ..') git_marked=1 ;; esac
-done
-assert "git group: an elision is marked, not silent" "$((1 - git_marked))"
-
-# A cap is only justified for a member that LEADS its group (gflush can never shed
-# a first member). Capping unconditionally is a regression against main: these two
-# both fit with room to spare and must render whole.
-#
-# Floor, stated rather than asserted: below ~COLUMNS 24 line 1 cannot be bounded at
-# all. A single atomic member (6-digit abbreviated churn is 13 columns) exceeds the
-# whole budget, and no shedding helps because it leads its group. That is the same
-# regime where MIN_PIP_COUNT already renders the CTX bar at 38 columns regardless,
-# so the pane is overrun by design well before line 1 contributes; the sweeps above
-# therefore start at 24.
-P_STYLE_LONG='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"output_style":{"name":"Deep Research Mode"}}'
-out=$(run_sl 48 "$P_STYLE_LONG" | strip_ansi | line1_block)
-case "$out" in *'Deep Research Mode'*) c=0 ;; *) c=1 ;; esac
-assert "config group: a style that fits is not ellipsized" "$c"
-
-# The burn rate is kept only when the WHOLE ROW fits on one line with it. Pinned at
-# the boundary from both sides: at the width where the row fits it exactly it must
-# survive (an off-by-one here silently costs the cell every time), and one column
-# narrower it must be the BURN that goes — not the total, and not by wrapping.
-# Match on the '/h)' suffix, not the figure — a literal '$7...' trips SC2016.
-# Non-git dir: the boundary width is a property of THIS row, and a git group +
-# telem chip would move it.
-cd "$NONGIT" || exit 2
-P_COST_EXACT='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000}}'
-out=$(run_sl 34 "$P_COST_EXACT" | strip_ansi | line1_block)
-case "$out" in *'/h)'*) c=0 ;; *) c=1 ;; esac
-assert "cost: a row that fits the burn exactly keeps it" "$c"
-
-out=$(run_sl 33 "$P_COST_EXACT" | strip_ansi | line1_block)
-case "$out" in *'/h)'*) c=1 ;; *'12.34'*) c=0 ;; *) c=1 ;; esac
-assert "cost: one column narrower sheds the burn, not the total" "$c"
-case "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" in 1) c=0 ;; *) c=1 ;; esac
-assert "cost: shedding the burn keeps line 1 unwrapped" "$c"
-
-# ── Worktree shown inside the branch, not appended to it ─────────────────────
-# The branch here is feature/some-really-long-branch-name, so a worktree named
-# "branch-name" is already part of it and must not be restated as a suffix — it is
-# recolored in place instead. Wide pane so nothing is truncated.
-cd "$COUNTERS" || exit 2
-P_WT_IN='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"branch-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-out=$(run_sl 120 "$P_WT_IN" | strip_ansi | line1_block)
-case "$out" in *'name/branch-name'*) c=1 ;; *) c=0 ;; esac
-assert "git group: a worktree already in the branch is not appended" "$c"
-case "$out" in *'feature/some-really-long-branch-name'*) c=0 ;; *) c=1 ;; esac
-assert "git group: the branch itself renders whole" "$c"
-# ...and the run is actually marked: magenta starts exactly at the worktree name.
-case "$(run_sl 120 "$P_WT_IN")" in *"${esc}[35mbranch-name"*) c=0 ;; *) c=1 ;; esac
-assert "git group: the worktree run inside the branch is recolored" "$c"
-
-# A worktree that is NOT part of the branch still earns its suffix.
-P_WT_OUT='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"unrelated-wt"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-case "$(run_sl 120 "$P_WT_OUT" | strip_ansi | line1_block)" in *'/unrelated-wt'*) c=0 ;; *) c=1 ;; esac
-assert "git group: an unrelated worktree name is still appended" "$c"
-
-# Boundary, not substring: "ranch-name" sits inside the branch but not at a name
-# boundary, so it must be treated as a different worktree and appended.
-P_WT_MID='{"workspace":{"current_dir":"/work/proj/x"},"worktree":{"name":"ranch-name"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}}'
-case "$(run_sl 120 "$P_WT_MID" | strip_ansi | line1_block)" in *'/ranch-name'*) c=0 ;; *) c=1 ;; esac
-assert "git group: a mid-word match is not treated as the worktree" "$c"
-
-# ── Effort tiers are abbreviated ─────────────────────────────────────────────
-cd "$NONGIT" || exit 2
-P_EFF='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"},"effort":{"level":"LEVEL"}}'
-eff_bad=0
-for pair in "low Lo" "medium Med" "high Hi" "xhigh XHi" "max Max"; do
-  lvl=${pair%% *} want=${pair##* }
-  out=$(run_sl 100 "${P_EFF/LEVEL/$lvl}" | strip_ansi | line1_block)
-  case "$out" in *" $want"*) ;; *) eff_bad=1 ;; esac
-done
-assert "config group: every effort tier renders as its short label" "$eff_bad"
-# An unknown tier must still render rather than vanish.
-case "$(run_sl 100 "${P_EFF/LEVEL/turbo}" | strip_ansi | line1_block)" in *Turbo*) c=0 ;; *) c=1 ;; esac
-assert "config group: an unknown effort tier still renders" "$c"
-
-# ── There is no name cell ────────────────────────────────────────────────────
-# Neither the agent name nor the session name renders. The untyped agent (every
-# background/spawned one) is the generic "claude", which names nothing and can't
-# tell two agents apart; the pane is already identified by the title's owner/repo
-# and the branch, so no name earns a column. Non-git dir on purpose: this repo's
-# own name would satisfy *claude*.
-cd "$NONGIT" || exit 2
-P_AGENT_BASE='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"cost":{"total_lines_added":163,"total_lines_removed":34}'
-out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"claude"}}' | strip_ansi | line1_block)
-case "$out" in *claude*) c=1 ;; *) c=0 ;; esac
-assert "session group: the generic agent name renders no cell" "$c"
-case "$out" in *'+163/-34'*) c=0 ;; *) c=1 ;; esac
-assert "session group: dropping the name keeps the churn" "$c"
-
-out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"reviewer"}}' | strip_ansi | line1_block)
-case "$out" in *reviewer*) c=1 ;; *) c=0 ;; esac
-assert "session group: a deliberately-named agent renders no cell either" "$c"
-
-# ...and the session name does not inherit the slot the agent name gave up.
-out=$(run_sl 100 "$P_AGENT_BASE"',"agent":{"name":"reviewer"},"session_name":"mine"}' | strip_ansi | line1_block)
-case "$out" in *mine*) c=1 ;; *) c=0 ;; esac
-assert "session group: the session name renders no cell" "$c"
-
-# ── Output style: the built-in style is not a cell ───────────────────────────
-# Claude Code names the default style in the payload ("claude"; older builds
-# "default"), so rendering it verbatim pinned a magenta word onto every session
-# that had never set a style. Non-git dir on purpose: this repo's own name would
-# otherwise satisfy the *claude* match from the title alone.
-cd "$NONGIT" || exit 2
-P_STYLE_BASE='{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"model":{"display_name":"Opus 4.8"}'
-out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"claude"}}' | strip_ansi | line1_block)
-case "$out" in *claude*) c=1 ;; *) c=0 ;; esac
-assert "config group: the default output style renders no cell" "$c"
-case "$out" in *'Opus 4.8'*) c=0 ;; *) c=1 ;; esac
-assert "config group: suppressing the default keeps the rest of the group" "$c"
-
-out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"Default"}}' | strip_ansi | line1_block)
-case "$out" in *[Dd]efault*) c=1 ;; *) c=0 ;; esac
-assert "config group: the default style is matched case-insensitively" "$c"
-
-out=$(run_sl 100 "$P_STYLE_BASE"',"output_style":{"name":"Explanatory"}}' | strip_ansi | line1_block)
-case "$out" in *Explanatory*) c=0 ;; *) c=1 ;; esac
-assert "config group: a non-default output style still renders" "$c"
-
-# A default style must not leave an empty bracket behind when it was the group's
-# only member (no model, no effort).
-out=$(run_sl 100 '{"workspace":{"current_dir":"/work/proj/x"},"context_window":{"used_percentage":10,"total_input_tokens":20000,"context_window_size":200000},"output_style":{"name":"claude"}}' | strip_ansi | line1_block)
-case "$out" in *'[]'*) c=1 ;; *) c=0 ;; esac
-assert "config group: a lone default style leaves no empty bracket" "$c"
-
-# ── Links are underlined ─────────────────────────────────────────────────────
-# The OSC 8 escape is zero-width, so an underline is the only thing that tells a
-# reader which cells are clickable. Asserted structurally — every link OPEN (a
-# non-empty URL payload) must be followed immediately by SGR 4 — so a future link
-# that forgets the affordance fails here rather than shipping silently.
-cd "$GITREPO" || exit 2
-git remote add origin https://github.com/TheGnarCo/claude-statusline.git 2> /dev/null
-bel=$(printf '\007')
-raw_links=$(run_sl 100 "$P_DIRTY")
-opens=$(printf '%s' "$raw_links" | grep -c "${esc}]8;;[^${bel}]\{1,\}${bel}")
-[ "$opens" -gt 0 ] && c=0 || c=1
-assert "links: a repo with a remote emits OSC8 hyperlinks" "$c"
-n_open=$(printf '%s' "$raw_links" | grep -o "${esc}]8;;[^${bel}]\{1,\}${bel}" | wc -l | tr -d ' ')
-n_ul=$(printf '%s' "$raw_links" | grep -o "${esc}]8;;[^${bel}]\{1,\}${bel}${esc}\[4m" | wc -l | tr -d ' ')
-[ "$n_ul" = "$n_open" ] && [ "$n_ul" != "0" ] && c=0 || c=1
-assert "links: every hyperlink opens with an underline (SGR 4)" "$c"
-# Closed with SGR 24, not a full reset: the caller's color must survive the link.
-case "$raw_links" in *"${esc}[24m"*) c=0 ;; *) c=1 ;; esac
+# ── Links ────────────────────────────────────────────────────────────────────
+# Inside a repo: the remote (and therefore every link target) is only resolved
+# when the process pwd is a working tree, so these cannot run from NONGIT.
+cd "$TELEMREPO" || exit 2
+P_LINK='{"workspace":{"current_dir":"/work/proj/x","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+linked=$(run_sl 120 "$P_LINK")
+case "$linked" in *"${esc}]8;;https://github.com/TheGnarCo/claude-statusline"*) c=0 ;; *) c=1 ;; esac
+assert "links: the repo title is an OSC8 hyperlink" "$c"
+# Every link opens with an underline, so you can tell what is clickable.
+case "$linked" in *"${esc}]8;;http"*"${esc}[4m"*) c=0 ;; *) c=1 ;; esac
+assert "links: a hyperlink opens with an underline (SGR 4)" "$c"
+case "$linked" in *"${esc}[24m"*) c=0 ;; *) c=1 ;; esac
 assert "links: the underline is closed with SGR 24" "$c"
 
-# Under cmux there is no link, so there must be no underline promising one.
-out_cmux=$(COLUMNS=100 HOME=/home/tester COLORTERM=truecolor CMUX_SURFACE_ID=1 \
-  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_DIRTY")
-case "$out_cmux" in *"${esc}]8;;"* | *"${esc}[4m"*) c=1 ;; *) c=0 ;; esac
-assert "links: cmux gets neither the OSC8 escape nor the underline" "$c"
-# ...and the link text itself is still there, just not clickable.
-case "$(printf '%s' "$out_cmux" | strip_ansi)" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
+cmuxed=$(COLUMNS=120 HOME=/home/tester CMUX_SURFACE_ID=surface-1 \
+  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_LINK")
+case "$cmuxed" in *"${esc}]8;;"*) c=1 ;; *) c=0 ;; esac
+assert "links: cmux gets no OSC8 escape" "$c"
+case "$cmuxed" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
 assert "links: cmux keeps the link text" "$c"
-git remote remove origin 2> /dev/null
+# The escape is zero-width, so dropping it must not move the frame.
+cm_bad=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || cm_bad=1; done <<< "$(printf '%s\n' "$cmuxed" | strip_ansi | vislen)"
+assert "links: cmux output keeps the same geometry" "$([ -z "$cm_bad" ] && echo 0 || echo 1)"
 
-# ── Summary ──────────────────────────────────────────────────────────────────
-cd "$ROOT" || exit 2
+cd "$NONGIT" || exit 2
+
+# ── Chrome margin ────────────────────────────────────────────────────────────
+wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
+  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
+assert "margin: CHROME_MARGIN=0 fills the pane edge to edge" \
+  "$([ "$wide_margin" -eq 120 ] && echo 0 || echo 1)"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
