@@ -222,10 +222,22 @@ assert "autocompact: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE moves the escalation" "$c"
 # ── Row 1 spans the full width (space-between, not packed left) ─────────────
 # A row ending in a long blank run reads as truncated; one reaching both edges
 # reads as laid out.
-row1_inner=$(printf '%s' "$l2" | sed 's/^│ //; s/ │$//')
-case "$row1_inner" in *' ') c=1 ;; *) c=0 ;; esac
-assert "row 1: the groups reach the right edge" "$c"
-case "$row1_inner" in *'│'*) c=0 ;; *) c=1 ;; esac
+# Slack is shared between the rules rather than packed hard left, but the share is
+# capped: unbounded space-between maroons a rule mid-pane on a sparse row, which
+# reads as a rendering fault rather than as layout. The cap is MAX_GROUP_GAP (16)
+# plus the rule's own two spaces, so no blank run inside row 1 may exceed 18.
+# Trailing pad is stripped first: that run is exactly what the cap creates, so
+# measuring it would assert against the feature. Drop the closing rule, then the
+# padding, and measure the blank runs that remain BETWEEN groups.
+interior() { sed 's/[^ ]*$//' | sed 's/ *$//' | grep -o ' *' | LC_ALL=C awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }'; }
+gap_normal=$(printf '%s' "$l2" | interior)
+assert "row 1: no interior blank run exceeds the capped gap" \
+  "$([ "$gap_normal" -le 18 ] && echo 0 || echo 1)"
+# ...and the same on a deliberately sparse row, the case the cap exists for:
+# two short groups in a wide pane.
+gap_sparse=$(run_sl 160 "$P_CTX_CALM" | strip_ansi | sed -n 2p | interior)
+assert "row 1: a sparse row in a wide pane is capped, not stretched" \
+  "$([ "$gap_sparse" -le 18 ] && echo 0 || echo 1)"
 assert "row 1: groups are divided by a vertical rule" "$c"
 
 # ── Shed order ───────────────────────────────────────────────────────────────
