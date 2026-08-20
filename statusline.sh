@@ -32,39 +32,25 @@
 # cmux's re-emulated grid) and no Nerd Font dependency.
 ESC=$(printf '\033')
 BEL=$(printf '\007')
-# Each bar cell type is a distinct SHAPE (not just a distinct color), so the
-# marker / projection / fill stay legible in mono terminals and colorblind view.
-PIP_MARKER='|'   # clock / threshold   (marker color)
-PIP_PROJ='*'     # burn projection     (yellow)
-PIP_OVERFLOW='!' # projection overflow (bold red)
-SIG_BRANCH='@'   # branch    (evokes git @/HEAD)
-
-# Each bar row also gets its OWN fill+track pair, so a row is identifiable by
-# silhouette alone — before color, and under NO_COLOR where color contributes
-# nothing. The pairing is the point: fill-only identity vanishes on a nearly
-# empty bar (at 2% the clock pip lands on the single filled cell and overwrites
-# it, leaving a window row with no fill glyph at all), and track-only identity
-# vanishes on a full one. Pairing them keeps every row legible at every level.
-# Fill is always the denser half of its pair, preserving the fill/track contrast
-# that makes a bar readable at all.
+# One texture for every meter: a mid shade over a light track. The meters are
+# told apart by the label immediately in front of each one and by colour, not by
+# glyph. That works in this layout and did not in the last one: side by side you
+# read a label and its bar in one glance, so shape has nothing left to
+# disambiguate. Stacked on separate rows it did, which is why the old per-row
+# glyph tiers existed.
 #
-# Glyph availability, stated precisely because the next person to add a row will
-# work from it: nothing here collides INSIDE a bar, where '# - | * !' are the only
-# spoken-for characters. Two of these do appear elsewhere on line 1, harmlessly —
-# '~' is the $HOME abbreviation in the title, and '.' is the '..' middle-ellipsis
-# marker on a truncated branch or model name. Different line, different context,
-# and no line-1 sigil ('+ ^ v ? x @') is reused here.
-PIP_FILL='#'      # 5h  fill  — solid band, the densest glyph in ASCII
-PIP_EMPTY='-'     # 5h  track — mid rule
-PIP_FILL_CTX='~'  # CTX fill  — wave, mid-height
-PIP_EMPTY_CTX='.' # CTX track — sparse dots
-PIP_FILL_7D=':'   # 7d  fill  — dotted band
-# 7d track — baseline rule. A long muted run of these resembles an underline, and
-# underline means "clickable" elsewhere in this statusline (OSC8 links open SGR 4).
-# Kept anyway: the resemblance needs text above the rule to actually mislead, links
-# only ever appear on line 1, and every remaining light glyph (',  '  `) is either
-# too faint to read as a track or too close to CTX's dots. Revisit if it confuses.
-PIP_EMPTY_7D='_'
+# These are Unicode block elements, not ASCII. That is a deliberate, breaking
+# change from every version before this one, and there is no ASCII fallback: the
+# marks are CP437-heritage and single-width, so the column arithmetic stays
+# deterministic, but a font that substitutes a double-width glyph will misalign
+# the frame. See README "Requirements".
+BAR_FILL='▒'  # spent
+BAR_TRACK='░' # untouched
+
+# Frame. Section labels sit inside the rules rather than above them.
+FR_TL='╭' FR_TR='╮' FR_BL='╰' FR_BR='╯'
+FR_H='─' FR_V='│' FR_ML='├' FR_MR='┤'
+SIG_BRANCH='@' # branch (evokes git @/HEAD)
 
 # ── Color capability ────────────────────────────────────────────────────────
 # Honor NO_COLOR (https://no-color.org) and dumb terminals; detect truecolor so
@@ -78,11 +64,11 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 
 # ── Style primitives ──────────────────────────────────────────────────────
 if [ "$USE_COLOR" -eq 0 ]; then
-  UNDIM="" BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
-  NEAR_WHITE="" MARKER="" MARKER_7D="" PROJ="" AUTOCOMPACT="" UL="" UL_OFF=""
+  BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
+  UL="" UL_OFF=""
   TELEM_ON="" TELEM_OFF=""
+  CTX_HUE="" FIVE_HUE="" SEVEN_HUE=""
 else
-  UNDIM="${ESC}[22m"
   BOLD="${ESC}[1m"
   UL="${ESC}[4m"
   UL_OFF="${ESC}[24m"
@@ -95,54 +81,26 @@ else
   MAGENTA="${ESC}[35m"
   CYAN="${ESC}[36m"
   if [ "$TRUECOLOR" -eq 1 ]; then
-    NEAR_WHITE="${ESC}[38;2;235;235;235m"
-    # A pip REPLACES its cell, so it is ink on the terminal background, not ink
-    # on the fill — what makes it findable is (a) contrast with that background
-    # and (b) perceptual distance from the fill ink beside it. Each row's pip is
-    # therefore picked to stay distinct across its OWN ramp's whole range. That
-    # rules out the obvious choices: on 7d a blue pip collides with the blue
-    # ramp's peak and a near-white one collides with its tinted-white terminus
-    # (both dE ~6), so 7d takes pink (dE ~73) instead.
-    MARKER="${ESC}[38;2;96;200;255m"     # 5h clock pip           (blue, on warm)
-    MARKER_7D="${ESC}[38;2;255;95;175m"  # 7d clock pip           (pink, on blue)
-    PROJ="${ESC}[38;2;255;210;80m"       # burn projection pip    (yellow)
-    AUTOCOMPACT="${ESC}[38;2;255;128;0m" # autocompact threshold  (amber, on purple)
-    TELEM_ON="${ESC}[38;2;181;110;58m"   # telem chip, covered   (dim burnt orange)
-    TELEM_OFF="${ESC}[38;2;255;160;60m"  # telem chip, untagged  (bright orange)
+    # Two oranges, and which is which is load-bearing. The BURNT one is chrome:
+    # frame, vertical rules, and the covered tag. The BRIGHT one is spent on one
+    # thing only — an untagged repo. Chrome that appears on every row of every
+    # repo cannot also be a warning, so the bright shade is never used for it.
+    TELEM_ON="${ESC}[38;2;181;110;58m"  # frame, rules, covered tag (burnt orange)
+    TELEM_OFF="${ESC}[38;2;255;160;60m" # untagged tag ONLY      (bright orange)
+    # One hue per meter, flat rather than ramped: the three bars are already
+    # distinguished by hue, so a gradient inside each would fight that.
+    CTX_HUE="${ESC}[38;2;158;86;224m"   # context   (purple)
+    FIVE_HUE="${ESC}[38;2;224;140;60m"  # 5h window (warm)
+    SEVEN_HUE="${ESC}[38;2;77;143;214m" # 7d window (blue)
   else
     # 256-color approximations for terminals without truecolor.
-    NEAR_WHITE="${ESC}[38;5;255m"
-    MARKER="${ESC}[38;5;39m"
-    MARKER_7D="${ESC}[38;5;205m" # xterm 205 IS #ff5faf — exact, not an approximation
-    PROJ="${ESC}[38;5;221m"
-    AUTOCOMPACT="${ESC}[38;5;208m"
     TELEM_ON="${ESC}[38;5;130m"
     TELEM_OFF="${ESC}[38;5;214m"
+    CTX_HUE="${ESC}[38;5;141m"
+    FIVE_HUE="${ESC}[38;5;179m"
+    SEVEN_HUE="${ESC}[38;5;68m"
   fi
 fi
-
-DEFAULT_PIP_COUNT=30 # fallback when the terminal width is unknown
-
-# Bars stretch to fill the row: pip_count = cols - reserve, where `reserve` is
-# the widest fixed (non-bar) overhead among the bar lines this render. All bars
-# share that one pip_count, so they render at equal width and their % columns
-# line up vertically.
-#
-# The reserve is computed at runtime (not a fixed constant) because a bar line's
-# trailing text is variable-width: the CTX line carries token counts, a cache%,
-# and headroom / AC / 200k+ chips; the 5h/7d lines carry a time-left + delta (+
-# an inline "7d N%" badge). A constant tuned only to the window line let the
-# often-wider CTX detail run off the right edge. Each line's overhead is
-# <fixed prefix> + <measured trailing text>:
-#   CTX line: CTX_FIXED + len(detail) + len(warn)
-#   5h/7d   : WIN_FIXED + len(time) + len(delta) + len(inline 7d badge)
-# where the *_FIXED constants count the non-bar, non-trailing cols — the label,
-# the spaces around the bar, the pct field + '%', and each line's fixed literals
-# (" left [ ]" on the window lines).
-CTX_FIXED=9
-WIN_FIXED=18
-BAR_SAFETY=1     # leave one blank col at the right edge of the widest bar line
-MIN_PIP_COUNT=12 # keep the bar readable on a narrow pane (and >1 for the gradient divisor)
 
 # Claude Code reports the *full* terminal width via COLUMNS, but it renders the
 # statusline inside its own chrome — a left indent plus a right-edge reservation
@@ -215,216 +173,29 @@ if [ -n "${CMUX_SURFACE_ID:-}${CMUX_BUNDLE_ID:-}" ]; then
   osc8() { printf '%s' "$2"; }
 fi
 
-# Bar width: fill the row edge-to-edge, holding back `reserve` cols for the
-# widest bar line's fixed + trailing text, with a MIN_PIP_COUNT floor (no
-# ceiling). Falls back to DEFAULT_PIP_COUNT when the width is unknown.
-pip_count_for_width() {
-  local c=$1 reserve=$2
-  if [ -z "$c" ]; then
-    echo "$DEFAULT_PIP_COUNT"
-    return
-  fi
-  local n=$((c - reserve))
-  [ "$n" -lt "$MIN_PIP_COUNT" ] && n=$MIN_PIP_COUNT
-  echo "$n"
+# Repeat a glyph n times. Bash 3.2 has no string repetition and printf's %*s
+# pads with spaces only, so this is a bounded loop — n is never wider than a pane.
+rep() {
+  local g=$1 n=$2 out="" i
+  for ((i = 0; i < n; i++)); do out="${out}${g}"; done
+  printf '%s' "$out"
 }
 
-# Ramp stops per row class; sets globals _S0R.._S4B. Every family runs the SAME
-# arc — a shared neutral grey at empty, up through its own saturated hue, out to
-# a hue-tinted white at full — so the three bars read as one system rather than
-# three unrelated color schemes, and a nearly empty bar looks consistent across
-# rows. That shared grey origin is deliberate, and it is exactly why hue can
-# never be the only signal: at low fill every family is still grey, which is the
-# work the per-row fill/track glyphs do.
-ramp_stops() {
-  case "$1" in
-    ctx) # deep purple — the context gauge
-      _S0R=74 _S0G=79 _S0B=92
-      _S1R=110 _S1G=72 _S1B=150
-      _S2R=158 _S2G=86 _S2B=224
-      _S3R=200 _S3G=158 _S3B=240
-      _S4R=238 _S4G=230 _S4B=250
-      ;;
-    7d) # blue intensity — the long window
-      _S0R=74 _S0G=79 _S0B=92
-      _S1R=56 _S1G=112 _S1B=168
-      _S2R=72 _S2G=168 _S2B=236
-      _S3R=150 _S3G=212 _S3B=246
-      _S4R=232 _S4G=244 _S4B=252
-      ;;
-    *) # warm blackbody — the live window; as shipped, bar the tinted terminus
-      _S0R=74 _S0G=79 _S0B=92
-      _S1R=176 _S1G=74 _S1B=58
-      _S2R=240 _S2G=160 _S2B=64
-      _S3R=255 _S3G=232 _S3B=144
-      _S4R=255 _S4G=250 _S4B=235
-      ;;
-  esac
-}
-
-# Gradient for row class $2 at t (0..10000); sets globals _GR/_GG/_GB. The
-# piecewise knees (3500/7000/9000) are the original blackbody ramp's, kept so
-# every family shares its pacing — slow through the low range, quickest across
-# the top — and so the warm family reproduces what shipped.
-gradient_at() {
-  local t=$1 u
-  ramp_stops "$2"
-  if [ "$t" -le 3500 ]; then
-    u=$((t * 10000 / 3500))
-    _GR=$((_S0R + (_S1R - _S0R) * u / 10000))
-    _GG=$((_S0G + (_S1G - _S0G) * u / 10000))
-    _GB=$((_S0B + (_S1B - _S0B) * u / 10000))
-  elif [ "$t" -le 7000 ]; then
-    u=$(((t - 3500) * 10000 / 3500))
-    _GR=$((_S1R + (_S2R - _S1R) * u / 10000))
-    _GG=$((_S1G + (_S2G - _S1G) * u / 10000))
-    _GB=$((_S1B + (_S2B - _S1B) * u / 10000))
-  elif [ "$t" -le 9000 ]; then
-    u=$(((t - 7000) * 10000 / 2000))
-    _GR=$((_S2R + (_S3R - _S2R) * u / 10000))
-    _GG=$((_S2G + (_S3G - _S2G) * u / 10000))
-    _GB=$((_S2B + (_S3B - _S2B) * u / 10000))
-  else
-    u=$(((t - 9000) * 10000 / 1000))
-    _GR=$((_S3R + (_S4R - _S3R) * u / 10000))
-    _GG=$((_S3G + (_S4G - _S3G) * u / 10000))
-    _GB=$((_S3B + (_S4B - _S3B) * u / 10000))
-  fi
-}
-
-# Precompute the fill gradient once as a small palette of SGR-open strings, so
-# render_bar is a table lookup per cell rather than a fresh gradient computation
-# per cell (a wide, now-uncapped bar can be 150+ cells across three bars every
-# refresh). Index a cell by gi = i*(GRAD_N-1)/(pip_count-1). Non-truecolor uses a
-# cool→warm 256-color ramp; NO_COLOR leaves the entries empty (bare '#' fill).
-GRAD_N=24
-_grad_warm=() _grad_ctx=() _grad_7d=() _grad_tmp=()
-# 256-color fallbacks, one per family. NOT optional: without them every
-# non-truecolor terminal collapses all three families onto one ramp and the tier
-# system simply doesn't exist for those users. Each ends on a tinted white
-# (230 #ffffd7 / 225 #ffd7ff / 195 #d7ffff) mirroring its truecolor terminus.
+# render_bar <pct> <width> <fill-color>
 #
-# All three open on 59 (#5f5f5f), so the shared grey origin holds here too and not
-# only in truecolor. 59 is also the closer cube approximation of the truecolor
-# origin (74,79,92) than the 60 (#5f5f87, blue-violet) this ramp used to start on
-# — squared distance 706 vs 2546.
-#
-# The two NEW families ascend monotonically in luminance, so the fill reads as a
-# level rather than dipping darker partway along; run.sh asserts it, because a
-# hand-picked index that breaks the run is invisible both to the ANSI-stripped
-# goldens and to the truecolor path. `warm` is exempt: past its origin it walks a
-# hue path (teal → magenta → red → amber) that dips at 96 and again at 202. Those
-# dips predate the per-row families, and flattening them would re-color the 5h row
-# on every non-truecolor terminal — a separate decision from this one.
-_grad256_warm='59 66 96 132 168 203 202 208 214 220 230'
-_grad256_ctx='59 60 97 98 134 135 141 177 183 189 225'
-_grad256_7d='59 60 68 74 75 81 117 153 159 195'
-# Fills _grad_tmp for one family; the caller copies it to that family's array.
-# (Bash 3.2 has no nested arrays and no namerefs, so a copy beats indirection.)
-build_palette() {
-  local family=$1 i t ramp
-  local -a r256
-  case "$family" in
-    ctx) ramp=$_grad256_ctx ;;
-    7d) ramp=$_grad256_7d ;;
-    *) ramp=$_grad256_warm ;;
-  esac
-  read -ra r256 <<< "$ramp"
-  _grad_tmp=()
-  for ((i = 0; i < GRAD_N; i++)); do
-    t=$((i * 10000 / (GRAD_N - 1)))
-    if [ "$USE_COLOR" -eq 0 ]; then
-      _grad_tmp[i]=""
-    elif [ "$TRUECOLOR" -eq 1 ]; then
-      gradient_at "$t" "$family"
-      _grad_tmp[i]="${ESC}[38;2;${_GR};${_GG};${_GB}m"
-    else
-      _grad_tmp[i]="${ESC}[38;5;${r256[$((t * (${#r256[@]} - 1) / 10000))]}m"
-    fi
-  done
-}
-build_palette warm
-_grad_warm=("${_grad_tmp[@]}")
-build_palette ctx
-_grad_ctx=("${_grad_tmp[@]}")
-build_palette 7d
-_grad_7d=("${_grad_tmp[@]}")
-
-# render_bar <pct> <marker_pct|""> <proj_pct|""> <pip_count> <marker_color> <class>
-# <class> is ctx | 7d | anything-else(=5h) and selects the row's fill glyph,
-# track glyph and gradient family. An unknown or empty class falls through to the
-# 5h pair, so a future caller that forgets it degrades to the shipped look rather
-# than rendering a bar with no fill.
+# Flat fill, no gradient. The three meters are distinguished by hue, so a ramp
+# inside each one would fight the thing hue is already doing; and with the clock
+# pips and projection gone there is nothing left in a bar that a gradient helped
+# locate. The old ramp machinery went with them.
 render_bar() {
-  local pct=$1 marker_pct=$2 proj_pct=$3 pip_count=$4 marker_color=$5 class=$6
-  local fill_pip empty_pip
-  local -a pal
-  case "$class" in
-    ctx)
-      fill_pip=$PIP_FILL_CTX empty_pip=$PIP_EMPTY_CTX
-      pal=("${_grad_ctx[@]}")
-      ;;
-    7d)
-      fill_pip=$PIP_FILL_7D empty_pip=$PIP_EMPTY_7D
-      pal=("${_grad_7d[@]}")
-      ;;
-    *)
-      fill_pip=$PIP_FILL empty_pip=$PIP_EMPTY
-      pal=("${_grad_warm[@]}")
-      ;;
-  esac
-  [ "$pct" -lt 0 ] && pct=0
-  local filled=$((pct * pip_count / 100))
-  [ "$filled" -gt "$pip_count" ] && filled=$pip_count
-  if [ "$pct" -gt 0 ] && [ "$filled" -eq 0 ]; then filled=1; fi
-
-  local marker_idx=-1 marker_expired=0
-  if [ -n "$marker_pct" ]; then
-    if [ "$marker_pct" -ge 100 ]; then
-      marker_idx=$((pip_count - 1))
-      marker_expired=1
-    else
-      local m=$marker_pct
-      [ "$m" -lt 0 ] && m=0
-      marker_idx=$((m * pip_count / 100))
-      [ "$marker_idx" -gt $((pip_count - 1)) ] && marker_idx=$((pip_count - 1))
-    fi
-  fi
-  local proj_idx=-1 proj_overflow=0
-  if [ -n "$proj_pct" ] && [ "$proj_pct" -ge 0 ]; then
-    if [ "$proj_pct" -gt 100 ]; then
-      # Projection runs off the right edge: pin to the last cell, flag overflow.
-      proj_idx=$((pip_count - 1))
-      proj_overflow=1
-    else
-      proj_idx=$((proj_pct * pip_count / 100))
-      [ "$proj_idx" -gt $((pip_count - 1)) ] && proj_idx=$((pip_count - 1))
-    fi
-  fi
-
-  local out="" i pip gi
-  for ((i = 0; i < pip_count; i++)); do
-    if [ "$i" -lt "$filled" ]; then pip=$fill_pip; else pip=$empty_pip; fi
-    if [ "$i" -eq "$marker_idx" ]; then
-      if [ "$marker_expired" -eq 1 ]; then
-        out="${out}${UNDIM}${RED}${PIP_MARKER}"
-      else
-        out="${out}${UNDIM}${marker_color}${PIP_MARKER}"
-      fi
-    elif [ "$i" -eq "$proj_idx" ]; then
-      if [ "$proj_overflow" -eq 1 ]; then
-        out="${out}${UNDIM}${BOLD}${RED}${PIP_OVERFLOW}"
-      else
-        out="${out}${UNDIM}${PROJ}${PIP_PROJ}"
-      fi
-    elif [ "$i" -lt "$filled" ]; then
-      gi=$((i * (GRAD_N - 1) / (pip_count - 1)))
-      out="${out}${UNDIM}${pal[gi]}${pip}"
-    else
-      out="${out}${MUTED}${pip}"
-    fi
-  done
-  printf '%s%s' "$out" "$RST"
+  local pct=$1 w=$2 color=$3 filled
+  [ "$w" -lt 1 ] && return 0
+  filled=$((pct * w / 100))
+  [ "$filled" -lt 0 ] && filled=0
+  [ "$filled" -gt "$w" ] && filled=$w
+  printf '%s%s%s%s%s' \
+    "$color" "$(rep "$BAR_FILL" "$filled")" \
+    "$MUTED" "$(rep "$BAR_TRACK" "$((w - filled))")" "$RST"
 }
 
 # Last two path components, with $HOME → ~ (mirrors last_two_components).
@@ -482,7 +253,6 @@ fields=$(printf '%s' "$input" | jq -r '
   "duration_ms=\(.cost.total_duration_ms // 0 | tostring)",
   "lines_added=\(.cost.total_lines_added // 0 | tostring)",
   "lines_removed=\(.cost.total_lines_removed // 0 | tostring)",
-  "exceeds_200k=\(if .exceeds_200k_tokens == true then "1" else "" end)",
   "five_pct=\(.rate_limits.five_hour.used_percentage // "" | tostring)",
   "five_resets_at=\(.rate_limits.five_hour.resets_at // "" | tostring)",
   "seven_pct=\(.rate_limits.seven_day.used_percentage // "" | tostring)",
@@ -495,7 +265,7 @@ worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
 lines_added=0
-lines_removed=0 exceeds_200k="" five_pct=""
+lines_removed=0 five_pct=""
 five_resets_at="" seven_pct="" seven_resets_at="" cols=""
 
 while IFS= read -r _kv || [ -n "$_kv" ]; do
@@ -520,7 +290,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     duration_ms) duration_ms=$_v ;;
     lines_added) lines_added=$_v ;;
     lines_removed) lines_removed=$_v ;;
-    exceeds_200k) exceeds_200k=$_v ;;
     five_pct) five_pct=$_v ;;
     five_resets_at) five_resets_at=$_v ;;
     seven_pct) seven_pct=$_v ;;
@@ -769,20 +538,46 @@ else
   wt_max=24
 fi
 
-# ── Line 1 (identity + config, packed onto one row; wraps when it won't fit) ─
-# Everything Claude Code reports about "where am I / how am I configured" folds
-# onto a single row of colored [] groups. A group is a CONCEPT, not a field: one
-# bracket for git state (branch/worktree, counters, this session's churn), one for
-# this session's config (name, model, ctx flag, effort, output style, cost), and
-# one for telemetry coverage. The groups pack left-to-right and spill to a
-# continuation line only when they exceed the pane, so the common case is one row (a
-# row saved vs. the old title+model split), and related cells read as one cell
-# instead of a bracket run.
-# Title: the repo as owner/name (linked), else the bare repo name, else the cwd's
-# last two components — truncated to the pane so an enormous name can't overflow on
-# its own. owner/name because a bare name is ambiguous across orgs (this repo and
-# the one it was seeded from are both "claude-statusline"), and because it's the
-# same identity the telemetry tag uses: project.name=owner/repo.
+# ── Panel ───────────────────────────────────────────────────────────────────
+# Five lines, two of them content:
+#
+#   ╭─ owner/repo ──────────────────────────────────────────────────────────╮
+#   │ @branch sigils churn │ model effort style │ $cost $burn      tagged │
+#   ├─ USAGE ───────────────────────────────────────────────────────────────┤
+#   │ CTX ▒▒░░ 420k/1M │ 5h ▒▒▒░ 5h0m │ 7d ▒▒░░ 2d4h                       │
+#   ╰───────────────────────────────────────────────────────────────────────╯
+#
+# Row 1 is what this session IS; row 2 is what it is spending. Groups ride on a
+# vertical rule rather than brackets, and both the frame and those rules take the
+# burnt Gnar orange. The BRIGHT orange is deliberately not used as chrome — it is
+# the untagged warning, and a colour that appears on every row of every repo can
+# no longer raise an alarm.
+
+pcols=$cols
+[ -z "$pcols" ] && pcols=112
+# Floor low enough that a narrow pane renders a cramped panel rather than one
+# that overruns its width and wraps — a wrapped frame is unreadable, a tight
+# one is merely tight.
+[ "$pcols" -lt 24 ] && pcols=24
+inner=$((pcols - 4)) # "│ " + content + " │"
+
+FRAME=$TELEM_ON
+SEP_D=" ${TELEM_ON}${FR_V}${RST} "
+SEP_P=" ${FR_V} "
+
+# Coverage rides in the TOP RULE, opposite the repo name — the two facts that are
+# true of the whole panel rather than of this turn. Being out of the content rows
+# also means it never competes for their columns and never sheds.
+tag_d="" tag_p=""
+case "$telem_state" in
+  tagged) tag_p="tagged" tag_d="${TELEM_ON}$(osc8 "$TELEM_URL" 'tagged')${RST}" ;;
+  untagged) tag_p="untagged" tag_d="${TELEM_OFF}$(osc8 "$TELEM_URL" 'untagged')${RST}" ;;
+esac
+
+# ── Title: the repo, as the panel's name, set into the top rule ─────────────
+# Owner muted, name in the frame's own orange and bold. Same hue as the rule it
+# sits in, which works because the rule is a thin run of ─ and the name is bold
+# text: weight and shape separate them where colour no longer does.
 if [ -n "$repo_slug" ]; then
   title_txt=$repo_slug
 elif [ -n "$repo_name" ]; then
@@ -790,331 +585,148 @@ elif [ -n "$repo_name" ]; then
 else
   title_txt=$dir_disp
 fi
-[ -n "$cols" ] && title_txt=$(trunc_mid "$title_txt" "$cols")
-# The owner renders muted so the repo name stays the row's visual anchor and the
-# extra columns don't shout. Once the slug has been ellipsized that split no longer
-# holds (the ".." can land anywhere in it), so a truncated title renders as one run.
-# No reset between the two runs: NEAR_WHITE already overrides MUTED, and a full
-# reset there would close the link underline halfway through the slug.
+_title_budget=$((inner - 6 - ${#tag_p}))
+[ "$_title_budget" -lt 8 ] && _title_budget=8
+title_txt=$(trunc_mid "$title_txt" "$_title_budget")
 if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
-  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${NEAR_WHITE}${repo_slug##*/}${RST}"
+  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${TELEM_ON}${repo_slug##*/}${RST}"
 else
-  title_disp="${BOLD}${NEAR_WHITE}${title_txt}${RST}"
+  title_disp="${BOLD}${TELEM_ON}${title_txt}${RST}"
 fi
-if [ -n "$repo_https" ]; then
-  id_part=$(osc8 "$repo_https" "$title_disp")
-else
-  id_part=$title_disp
-fi
+[ -n "$repo_https" ] && title_disp=$(osc8 "$repo_https" "$title_disp")
 
-# Bracket groups are assembled as (display, visible-length) segments, then packed
-# onto lines below — the length twin lets the packer measure width without the
-# ANSI/OSC8 noise in the display string.
-seg_disp=() seg_len=()
-add_seg() {
-  seg_disp[${#seg_disp[@]}]=$1
-  seg_len[${#seg_len[@]}]=$2
-}
-
-# Group builder: members accumulate into one open group, then gflush emits them
-# space-separated inside a single bracketed segment. Each member carries its own
-# color, so a group stays multi-colored inside one []; the plain twin tracks the
-# visible width (the display string is full of ANSI/OSC8 noise). A group whose
-# every member was empty flushes to nothing — no empty [] on the row.
+# ── Row 1 ───────────────────────────────────────────────────────────────────
+# Built at a shed level; the caller walks levels up until the row fits. Sets
+# R1_D (display) and R1_P (its visible-length twin).
 #
-# Members are held as parallel (display, plain) arrays rather than concatenated
-# eagerly, because gflush has to be able to DROP members — see its comment.
-_gm_disp=() _gm_plain=()
-# gadd <colored> <plain> — append a member; a member with no plain text is a
-# no-op. Add members in priority order: gflush sheds from the tail.
-gadd() {
-  [ -z "$2" ] && return
-  _gm_disp[${#_gm_disp[@]}]=$1
-  _gm_plain[${#_gm_plain[@]}]=$2
-}
+# Shed order, cheapest loss first: the per-hour burn (derived, recomputable from
+# the total), then the output style (set once, rarely re-read), then this
+# session's churn (the tree state above it is the urgent half), then the branch
+# name itself, middle-ellipsized. The coverage tag never sheds — it is anchored
+# to the right edge, so what gives way is always on the left.
+build_row1() {
+  local lvl=$1 bmax=$2
+  local n=0 d p b wt
+  G_D=() G_P=()
 
-# gflush — emit the open group as one bracketed segment.
-#
-# A group is UNSPLITTABLE: the packer below relocates a whole segment to a
-# continuation line but never breaks one open, so a group wider than the row
-# overruns the pane and forces the wrap CHROME_MARGIN exists to prevent. With one
-# bracket per field that was unreachable — every field carried its own budget —
-# but grouping sums them (a long session name + big churn + a big cost now share
-# a bracket), so the ceiling has to be enforced here: an over-wide group sheds
-# its lowest-priority members and marks the elision with '..'. The first member
-# is always kept, so it carries its own cap: branch_max/wt_max clamped to `avail`
-# for git, branch_max for the session name and the model — and branch_max is
-# itself clamped to cols-5 (see its floor), without which a group could overrun
-# the row on its unsheddable first member alone.
-gflush() {
-  local n=${#_gm_plain[@]}
-  [ "$n" -eq 0 ] && return
-  local i budget=-1 full=0
-
-  # Measure the group whole; only an over-wide one is re-packed against a budget
-  # (which also holds room for " .."), so the common case is untouched.
-  if [ -n "$cols" ]; then
-    for ((i = 0; i < n; i++)); do
-      [ "$i" -gt 0 ] && full=$((full + 1))
-      full=$((full + ${#_gm_plain[i]}))
-    done
-    if [ $((full + 2)) -gt "$cols" ]; then
-      budget=$((cols - 5))
-      [ "$budget" -lt 1 ] && budget=1
-    fi
-  fi
-
-  local disp="" plain="" sep elided=0
-  for ((i = 0; i < n; i++)); do
-    sep=0
-    [ -n "$plain" ] && sep=1
-    # break, not continue: members were added in priority order, so once one
-    # doesn't fit, everything after it goes too. Skipping ahead to whatever
-    # happens to be shorter would drop a higher-priority member while keeping a
-    # lower-priority one, and would put the trailing '..' after a member that was
-    # never elided — the marker has to mean "everything past here is missing".
-    #
-    # The cost of that is real and accepted: a short low-priority member can be
-    # dropped while columns sit unused, because including it would mean skipping
-    # the longer higher-priority member in front of it. A predictable prefix and a
-    # marker that means one thing beat packing 1 more char into the row.
-    if [ "$budget" -ge 0 ] && [ -n "$plain" ] &&
-      [ $((${#plain} + sep + ${#_gm_plain[i]})) -gt "$budget" ]; then
-      elided=1
-      break
-    fi
-    if [ "$sep" -eq 1 ]; then disp="${disp} " plain="${plain} "; fi
-    disp="${disp}${_gm_disp[i]}" plain="${plain}${_gm_plain[i]}"
-  done
-  if [ "$elided" -eq 1 ]; then
-    # Best-effort: an unmarked elision is bad, but overrunning the row is worse
-    # (that is the wrap CHROME_MARGIN exists to prevent). Only reachable when the
-    # unsheddable first member already fills the row.
-    if [ -z "$cols" ] || [ $((${#plain} + 5)) -le "$cols" ]; then
-      disp="${disp} ${MUTED}..${RST}" plain="${plain} .."
-    fi
-  fi
-
-  add_seg "${MUTED}[${RST}${disp}${MUTED}]${RST}" $((2 + ${#plain}))
-  _gm_disp=() _gm_plain=()
-}
-
-# ── Group 1: git ────────────────────────────────────────────────────────────
-# [@<branch>(/<worktree>) <counters>] — everything git knows about this checkout
-# in one cell: branch (blue, linked to the tree), worktree (magenta), then the
-# working-tree counters. They were three brackets; they're one concept, so the
-# eye stops once instead of parsing a bracket run to reassemble "git state".
-#
-# Counters are colored ASCII sigils (untracked cyan, modified yellow, staged
-# green, conflict bold-red, stash magenta, ahead green, behind red) — the glyph +
-# count is ~4x denser than "N untracked, N modified, …". Sigils:
-#   x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
-
-# Worktree name (Claude's payload first, else the git worktree dir basename).
-wt=$worktree_name_input
-[ -z "$wt" ] && wt=$git_worktree_name
-
-# Collect the counters BEFORE the branch, so their width is known while the
-# branch/worktree budgets are still being chosen. Inside one bracket the two
-# compete for the row, and they are not equally sheddable: a counter is atomic
-# data (dropping x1 or *3 misreports the tree as conflict-free or stash-free)
-# while a branch name is designed to be ellipsized. So the NAMES yield to the
-# counters, never the reverse — with separate brackets the packer used to wrap
-# the counters onto a continuation line, and shedding them instead would lose
-# state the split layout kept.
-# Order is MOST URGENT FIRST, and that is load-bearing rather than cosmetic:
-# gflush sheds from the tail, so display order *is* shed order. A mid-merge
-# conflict and unpushed/unpulled commits are the states you cannot afford to miss
-# (they change what you should do next); a stash count is the one you can. So the
-# tail — stash, untracked — is what a too-narrow pane gives up, and x/^/v are the
-# last to go. Leftmost is also nearest the branch it qualifies.
-_ct_disp=() _ct_plain=()
-ctadd() {
-  _ct_disp[${#_ct_disp[@]}]=$1
-  _ct_plain[${#_ct_plain[@]}]=$2
-}
-[ "$conflict" -gt 0 ] && ctadd "${BOLD}${RED}x${conflict}${RST}" "x${conflict}"
-[ "$ahead" -gt 0 ] && ctadd "${GREEN}^${ahead}${RST}" "^${ahead}"
-[ "$behind" -gt 0 ] && ctadd "${RED}v${behind}${RST}" "v${behind}"
-[ "$unstaged" -gt 0 ] && ctadd "${YELLOW}!${unstaged}${RST}" "!${unstaged}"
-[ "$staged" -gt 0 ] && ctadd "${GREEN}+${staged}${RST}" "+${staged}"
-[ "$untracked" -gt 0 ] && ctadd "${CYAN}?${untracked}${RST}" "?${untracked}"
-[ "$stash" -gt 0 ] && ctadd "${MAGENTA}*${stash}${RST}" "*${stash}"
-
-nct=${#_ct_plain[@]}
-ct_width=0
-for ((ci = 0; ci < nct; ci++)); do ct_width=$((ct_width + 1 + ${#_ct_plain[ci]})); done
-
-if [ "$git_is_repo" -eq 1 ] || [ -n "$branch" ]; then
-  b=$branch
-  [ -z "$b" ] && b="-"
-
-  # Name budgets. `avail` is the row minus "[]", the "@", and the counters — what
-  # the names may occupy, including the "/" a worktree adds.
-  #
-  # Sized from what each name ACTUALLY NEEDS (its own length, capped by its share
-  # of the pane), never from the 5-col floor: budgeting by the floor threw away a
-  # 2-char worktree suffix that had room to spare, and handed the worktree a flat
-  # 40% it didn't need while over-truncating the branch. Order of yielding, most
-  # expendable last to arrive: shrink the branch -> shrink the worktree -> drop
-  # the worktree suffix -> and only then let gflush's tail-shed reach a counter.
-  # The suffix goes before any counter because it restates which checkout this is,
-  # which the pane title and branch already imply, while a missing counter
-  # misreports the tree. Floor at 5 because trunc_mid declines to ellipsize below
-  # that (it would hand the name back untouched and overrun anyway).
-  b_max=$branch_max
-  w_max=$wt_max
-  # Claude Code names a worktree branch "worktree-<name>", so the "/wt" suffix
-  # usually spends 1+len(wt) columns restating text the branch already carries —
-  # 23 of them for "@worktree-underline-links-1-1-1/underline-links-1-1-1". When
-  # the branch already contains the name, show it IN PLACE: that run of the branch
-  # renders magenta, the same color the suffix used, so the cell still answers
-  # "which worktree?" at zero extra width.
-  #
-  # Matched only at a name boundary (the whole branch, or delimited by -/_), so a
-  # short worktree name can't claim a coincidental substring of an unrelated
-  # branch and suppress a suffix that was carrying real information.
-  wt_inline=0
-  if [ -n "$wt" ] && [ -n "$branch" ]; then
-    case "$branch" in
-      "$wt" | *[-/_]"$wt" | "$wt"[-/_]*) wt_inline=1 ;;
-    esac
-  fi
-  show_wt=0
-  [ -n "$wt" ] && [ "$wt_inline" -eq 0 ] && show_wt=1
-  if [ -n "$cols" ]; then
-    avail=$((cols - 3 - ct_width))
-
-    want_b=${#b}
-    [ "$want_b" -gt "$b_max" ] && want_b=$b_max
-    want_w=0
-    if [ "$show_wt" -eq 1 ]; then
-      want_w=${#wt}
-      [ "$want_w" -gt "$w_max" ] && want_w=$w_max
-    fi
-    need=$want_b
-    [ "$show_wt" -eq 1 ] && need=$((need + 1 + want_w))
-
-    # The suffix is shown only when it costs the branch NOTHING — i.e. both names
-    # fit at the lengths they want. That is not a stylistic choice, it is the only
-    # rule that keeps the BRANCH monotonic in pane width: showing "/wt" costs
-    # 1+len(wt) columns, so any width at which the suffix starts appearing would
-    # otherwise SHORTEN the branch by that much versus one column narrower. (An
-    # earlier version squeezed both and pinned the branch at its floor to keep the
-    # suffix, which is exactly how widening a pane could shorten the branch.)
-    #
-    # The branch is monotonic; the SUFFIX is not, and it cannot be made so here.
-    # `need` is capped by branch_max (cols/3) and wt_max (cols/5), so where both
-    # step — cols divisible by 15 — need grows by 2 while avail grows by 1 and the
-    # suffix drops out for exactly one column (shown at COLUMNS 52, gone at 53,
-    # back at 54, with a long branch and a >=9-char worktree). Periods 3 and 5
-    # collide every 15 columns whatever the caps are; letting the branch absorb the
-    # difference instead just moves the 1-column artifact onto branch length, which
-    # is the more informative cell. Bounded and asserted in test/run.sh: the suffix
-    # never vanishes for more than one consecutive column.
-    # Below that, the suffix is dropped and the whole budget goes to the branch —
-    # one readable branch beats two mangled names, and it is the branch the
-    # counters qualify.
-    if [ "$need" -le "$avail" ]; then
-      b_max=$want_b w_max=$want_w
+  # git — branch, worktree, working-tree sigils, this session's churn
+  if [ -n "$branch" ]; then
+    b=$(trunc_mid "$branch" "$bmax")
+    wt=$git_worktree_name
+    [ -z "$wt" ] && wt=$worktree_name_input
+    # A worktree name that is NOT already inside the branch costs a suffix, and
+    # that suffix is the next thing to give once the branch itself is truncated.
+    [ "$lvl" -ge 3 ] && [ "${b#*"$wt"}" = "$b" ] && wt=""
+    p="${SIG_BRANCH}${b}"
+    # Claude Code names its worktree branches worktree-<name>, so the name is
+    # already inside the branch. Recolour that run in place rather than restating
+    # it — same information, ~23 fewer columns on the common case.
+    if [ -n "$wt" ] && [ "${b#*"$wt"}" != "$b" ]; then
+      d="${BLUE}${SIG_BRANCH}${b%%"$wt"*}${MAGENTA}${wt}${BLUE}${b#*"$wt"}${RST}"
     else
-      show_wt=0
-      b_max=$want_b
-      [ "$b_max" -gt "$avail" ] && b_max=$avail
+      d="${BLUE}${SIG_BRANCH}${b}${RST}"
+      if [ -n "$wt" ]; then
+        d="${d}${MUTED}/${MAGENTA}${wt}${RST}"
+        p="${p}/${wt}"
+      fi
     fi
-    [ "$b_max" -lt 5 ] && b_max=5
+    [ -n "$repo_https" ] && [ -n "$branch" ] &&
+      d=$(osc8 "${repo_https}/tree/${branch}" "$d")
+
+    # Working-tree state, most urgent first — a conflict or unpushed commits are
+    # what you cannot afford to miss; a stash count is what you can.
+    if [ "$lvl" -lt 4 ]; then
+      [ "$conflict" -gt 0 ] && d="${d} ${BOLD}${RED}x${conflict}${RST}" && p="${p} x${conflict}"
+      [ "$ahead" -gt 0 ] && d="${d} ${GREEN}^${ahead}${RST}" && p="${p} ^${ahead}"
+      [ "$behind" -gt 0 ] && d="${d} ${RED}v${behind}${RST}" && p="${p} v${behind}"
+      [ "$unstaged" -gt 0 ] && d="${d} ${YELLOW}!${unstaged}${RST}" && p="${p} !${unstaged}"
+      [ "$staged" -gt 0 ] && d="${d} ${GREEN}+${staged}${RST}" && p="${p} +${staged}"
+      [ "$untracked" -gt 0 ] && d="${d} ${CYAN}?${untracked}${RST}" && p="${p} ?${untracked}"
+      [ "$stash" -gt 0 ] && d="${d} ${MAGENTA}*${stash}${RST}" && p="${p} *${stash}"
+    fi
+
+    if [ "$lvl" -lt 3 ] && { [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; }; then
+      local ca cr
+      ca=$(abbrev_num "$lines_added")
+      cr=$(abbrev_num "$lines_removed")
+      d="${d} ${GREEN}${BOLD}+${ca}${RST}${MUTED}/${RED}${BOLD}-${cr}${RST}"
+      p="${p} +${ca}/-${cr}"
+    fi
+    G_D[n]=$d
+    G_P[n]=$p
+    n=$((n + 1))
   fi
 
-  # Truncate the *displayed* text only; the hyperlink target keeps the full ref.
-  b_txt=$(trunc_mid "$b" "$b_max")
-  # Recolor, never re-measure: b_plain below still counts b_txt, and the highlight
-  # is only applied when the run survived truncation whole. Switching to MAGENTA
-  # and back to BLUE (not RST) keeps the bold and the link underline intact.
-  b_render=$b_txt
-  if [ "$wt_inline" -eq 1 ]; then
-    case "$b_txt" in
-      *"$wt"*) b_render="${b_txt%%"$wt"*}${MAGENTA}${wt}${BLUE}${b_txt#*"$wt"}" ;;
-    esac
+  # config — every knob that decides how this session behaves
+  d="" p=""
+  if [ "$lvl" -lt 6 ] && [ -n "$model_name" ]; then
+    d="${CYAN}${model_name}${RST}"
+    p="$model_name"
   fi
-  if [ -n "$repo_https" ] && [ -n "$branch" ]; then
-    b_disp=$(osc8 "$repo_https/tree/$branch" "$b_render")
-  else
-    b_disp=$b_render
+  if [ -n "$effort_cap" ]; then
+    [ -n "$p" ] && d="${d} " && p="${p} "
+    d="${d}${GREEN}${effort_cap}${RST}"
+    p="${p}${effort_cap}"
   fi
-  b_plain="${SIG_BRANCH}${b_txt}"
-  if [ "$show_wt" -eq 1 ]; then
-    wt_txt=$(trunc_mid "$wt" "$w_max")
-    b_disp="${b_disp}${MAGENTA}/${wt_txt}"
-    b_plain="${b_plain}/${wt_txt}"
+  if [ "$lvl" -lt 2 ] && [ -n "$output_style" ]; then
+    [ -n "$p" ] && d="${d} " && p="${p} "
+    d="${d}${MAGENTA}${output_style}${RST}"
+    p="${p}${output_style}"
   fi
-  gadd "${BLUE}${BOLD}${SIG_BRANCH}${b_disp}${RST}" "$b_plain"
-fi
-
-for ((ci = 0; ci < nct; ci++)); do gadd "${_ct_disp[ci]}" "${_ct_plain[ci]}"; done
-# Session churn joins the git cell: +N/-M is what this session did to this
-# working tree, so it reads with the tree's own state rather than as its own
-# bracket. Last in the group, hence first to shed — the counters describe what is
-# there now, the churn describes how it got there.
-#
-# Digits are the one member that must not be ellipsized ("+12..56" reads as a real
-# number), so an over-wide churn abbreviates the way token counts already do:
-# +123456/-654321 -> +123k/-654k. It can also LEAD the group (churn reported
-# outside a repo), and gflush never sheds a first member, so it must fit alone.
-if [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; then
-  ch_add=$lines_added ch_del=$lines_removed
-  if [ -n "$cols" ] && [ $((${#ch_add} + ${#ch_del} + 3)) -gt $((cols - 5)) ]; then
-    ch_add=$(abbrev_num "$lines_added")
-    ch_del=$(abbrev_num "$lines_removed")
+  if [ -n "$p" ]; then
+    G_D[n]=$d
+    G_P[n]=$p
+    n=$((n + 1))
   fi
-  gadd "${GREEN}${BOLD}+${ch_add}${RST}${MUTED}/${RED}${BOLD}-${ch_del}${RST}" \
-    "+${ch_add}/-${ch_del}"
-fi
 
-gflush
+  # spend — the one derived number on the row, and the only one still moving
+  if [ "$lvl" -lt 5 ] && [ -n "$money_total" ]; then
+    d="${GREEN}${money_total}${RST}"
+    p="$money_total"
+    if [ "$lvl" -lt 1 ] && [ -n "$money_burn" ]; then
+      d="${d}  ${GREEN}${money_burn}${RST}"
+      p="${p}  ${money_burn}"
+    fi
+    G_D[n]=$d
+    G_P[n]=$p
+    n=$((n + 1))
+  fi
+  G_N=$n
+}
 
-# ── Group 2: this session's config ──────────────────────────────────────────
-# [<model> <ctxflag> <effort> <style> <$cost>] — every knob that decides how this
-# session behaves, in one cell: model (cyan), extended-context flag (yellow),
-# reasoning effort (green), output style (magenta), spend (green).
-#
-# There is no name cell. The group used to lead with one — the agent name, else
-# your session_name — on the theory that it answered "which of my many concurrent
-# tabs is this?" before anything about the model mattered. It didn't: every
-# untyped agent reports the generic "claude", which names nothing and can't tell
-# two agents apart, and the pane is already identified by the title's owner/repo
-# and the branch. The cost trails: it is the group's one derived number, the only
-# member that keeps changing on its own, and the one you can reconstruct after the
-# fact from the transcript.
-#
-# Short name: drop the " (...)" suffix. Capped to the branch budget because it
-# leads the group, and gflush can never shed a first member.
-model_short="${model_name%% (*}"
-model_short=$(trunc_mid "$model_short" "$branch_max")
+# Join the groups across the FULL row: first hard left, last hard right, the slack
+# shared evenly between the rules in between — space-between, not packed-left.
+# A row that ends in a long blank run reads as truncated; one that reaches both
+# edges reads as laid out.
+assemble_row1() {
+  local i slack per extra rem left right
+  R1_D="" R1_P=""
+  [ "$G_N" -eq 0 ] && return 0
+  local sum=0
+  for ((i = 0; i < G_N; i++)); do sum=$((sum + ${#G_P[i]})); done
+  slack=$((inner - sum - (G_N - 1) * 3))
+  [ "$slack" -lt 0 ] && slack=0
+  per=0 rem=0
+  if [ "$G_N" -gt 1 ]; then
+    per=$((slack / (G_N - 1)))
+    rem=$((slack % (G_N - 1)))
+  fi
+  for ((i = 0; i < G_N; i++)); do
+    if [ "$i" -gt 0 ]; then
+      extra=$per
+      [ "$((i - 1))" -lt "$rem" ] && extra=$((extra + 1))
+      left=$((extra / 2))
+      right=$((extra - left))
+      R1_D="${R1_D}$(rep ' ' "$((left + 1))")${TELEM_ON}${FR_V}${RST}$(rep ' ' "$((right + 1))")"
+      R1_P="${R1_P}$(rep ' ' "$((left + 1))")${FR_V}$(rep ' ' "$((right + 1))")"
+    fi
+    R1_D="${R1_D}${G_D[i]}"
+    R1_P="${R1_P}${G_P[i]}"
+  done
+}
 
-# Context flag: prefer the authoritative context_window_size — anything past the
-# 200k default becomes a flag (abbrev_num(1000000) -> "1M"). Fall back to the
-# model-name parenthetical whenever the size field yields no flag (absent, or a
-# build that reports the default size while the 1M beta is active), so the
-# extended-window indicator is never silently dropped.
-ctx_flag=""
-if [ "$ctx_window_size" -gt 200000 ]; then
-  ctx_flag="$(abbrev_num "$ctx_window_size")"
-fi
-if [ -z "$ctx_flag" ]; then
-  case "$model_name" in
-    *\(*\)*)
-      ctx_flag="${model_name#*(}"
-      ctx_flag="${ctx_flag%%)*}"
-      ctx_flag="${ctx_flag%% context}" # "1M context" -> "1M"
-      ;;
-  esac
-fi
-
-# Effort: a 2-3 char label per tier. Every tier is abbreviated, not just the ones
-# that read wrong title-cased ("Xhigh"), because the cell is a dial position — you
-# read it against the other tiers, not as a word — and "Medium" spent 6 columns
-# saying what "Med" says. An unknown tier still title-cases so a new one from
-# Claude Code renders legibly instead of vanishing.
+# Effort: a 2-3 char label per tier. The cell is a dial position — you read it
+# against the other tiers, not as a word — so every tier abbreviates.
 case "$effort_level" in
   "") effort_cap="" ;;
   low) effort_cap="Lo" ;;
@@ -1125,314 +737,195 @@ case "$effort_level" in
   *) effort_cap="$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')${effort_level:1}" ;;
 esac
 
-# The model cells stay gated on the model fields: a payload that reports only a
-# context_window_size must not surface a bare [1M] on its own (it didn't before
-# these merged into one group).
-#
-# Order is shed order here too (gflush drops from the tail), so the output style
-# goes last: it is set once and stays put, while everything ahead of it describes
-# what this session IS.
-show_model=0
-if [ -n "$model_name" ] || [ -n "$effort_level" ] || [ -n "$output_style" ]; then
-  show_model=1
+# Spend, split so the burn can shed without taking the total with it. Detect the
+# burn by its UNIT, never by punctuation: a previous version keyed the shed on a
+# literal " (" and silently stopped matching when the parens were dropped, which
+# sent gflush after the whole cost member and lost the total too.
+money_total="" money_burn=""
+if [ -n "$cost_usd" ]; then
+  money_total=$(awk -v c="$cost_usd" 'BEGIN{ if (c ~ /^[0-9]+(\.[0-9]+)?$/) printf "$%.2f", c }')
+  money_burn=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
+    if (c ~ /^[0-9]+(\.[0-9]+)?$/ && c+0 > 0 && d+0 >= 60000)
+      printf "$%.2f/h", (c+0) / ((d+0)/3600000.0)
+  }')
 fi
-if [ "$show_model" -eq 1 ]; then
-  gadd "${CYAN}${model_short}${RST}" "$model_short"
-  gadd "${YELLOW}${ctx_flag}${RST}" "$ctx_flag"
-  gadd "${GREEN}${effort_cap}${RST}" "$effort_cap"
-fi
-# Capped ONLY when it actually leads the group — i.e. every cell ahead of it is
-# empty. Capping unconditionally ellipsized a long style name that fit with columns
-# to spare ("Deep Research Mode" -> "Deep R..h Mode" at COLUMNS=48, where main
-# showed it whole); the first-member rule that justifies a cap simply did not apply.
-style_txt=$output_style
-if [ -z "$model_short" ] && [ -z "$ctx_flag" ] && [ -z "$effort_cap" ]; then
-  style_txt=$(trunc_mid "$output_style" "$branch_max")
-fi
-[ "$show_model" -eq 1 ] && gadd "${MAGENTA}${style_txt}${RST}" "$style_txt"
 
-# Cost: total + per-hour burn from one awk pass (burn needs >=1min of duration).
-money=$(awk -v c="$cost_usd" -v d="$duration_ms" 'BEGIN{
-  if (c ~ /^[0-9]+(\.[0-9]+)?$/) {
-    printf "$%.2f", c
-    if (c+0 > 0 && d+0 >= 60000) printf " ($%.2f/h)", (c+0) / ((d+0)/3600000.0)
-  }
-}')
-# The cost cell can still be the group's FIRST member (a payload with a cost and
-# no name, model, effort or style), and gflush never sheds a first member — so it
-# has to fit on its own. Drop the derived per-hour burn before the total, which is
-# the half you cannot reconstruct from the other.
-# Gated on the ROW, not on branch_max: that is a name budget (cols/3), and using
-# it here dropped the burn rate at COLUMNS=60, where it fits fine.
-#
-# Measured against what the group ALREADY holds, not against the money cell alone.
-# Alone-only meant that in the ordinary name+churn+cost group the full string still
-# "fit the row" on its own, so nothing shortened — and gflush then shed the entire
-# cost member, losing the total too. That inverted the intent: at COLUMNS=52 the
-# row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
-# The per-hour burn is the row's most expendable text: derived, ~9 columns, and
-# recomputable from the total, which is the half you cannot get back. So it is kept
-# only when the WHOLE row still fits on ONE line with it — a burn rate that costs a
-# wrapped line costs more than it says.
-#
-# Projected width = title + the space after it + every group already flushed + this
-# group as it stands + the telemetry chip that always follows (its text + brackets;
-# it is the last group either way). Measuring the row, not the money cell alone, is
-# what makes this correct in both directions: cell-alone let the full string "fit"
-# while gflush then shed the entire cost member, losing the TOTAL too — at
-# COLUMNS=52 the row read `[my-ses..e-here +1200/-450 ..]` when `$12.34` had room.
-#
-# The separator counts only when something is actually there. Adding it
-# unconditionally cost a cost-only group its burn rate at an exact fit (19 columns
-# into 19), which is the very case the check exists for.
-if [ -n "$cols" ] && [ -n "$money" ]; then
-  case "$money" in
-    *' ('*)
-      _rw=${#title_txt} # title_len is not assigned until the packer, below
-      for ((_ri = 0; _ri < ${#seg_len[@]}; _ri++)); do _rw=$((_rw + seg_len[_ri])); done
-      # The space after the title, which the packer adds before the FIRST group —
-      # so it is owed whenever there is a title, not only once a group has flushed
-      # (this group may be the first one).
-      [ "${#title_txt}" -gt 0 ] && _rw=$((_rw + 1))
-      _gw=0
-      for ((_ri = 0; _ri < ${#_gm_plain[@]}; _ri++)); do
-        [ "$_ri" -gt 0 ] && _gw=$((_gw + 1))
-        _gw=$((_gw + ${#_gm_plain[_ri]}))
-      done
-      [ "${#_gm_plain[@]}" -gt 0 ] && _gw=$((_gw + 1)) # separator before the cost
-      _rw=$((_rw + 2 + _gw + ${#money}))               # this group's own brackets
-      case "$telem_state" in
-        tagged) _rw=$((_rw + 11)) ;;
-        untagged) _rw=$((_rw + 14)) ;;
-      esac
-      [ "$_rw" -gt "$cols" ] && money=${money%% (*}
-      ;;
-  esac
-fi
-gadd "${GREEN}${money}${RST}" "$money"
-gflush
-
-# ── Group 3: telemetry coverage ─────────────────────────────────────────────
-# [telem tag] when this repo's Claude Code usage is attributed to a project in the
-# dashboard, [no telem tag] when it isn't and the usage lands there under
-# "(untagged)" (fix: /toolkit:project-telem-tag). Two shades of ONE hue rather than
-# green-vs-yellow: this is one axis with two positions, not two unrelated states, so
-# it reads as a single dial — dim burnt orange for covered, bright orange for the
-# state that wants doing something about. Nothing rests on telling the shades apart:
-# the two chips already differ by the word "no". Both are OSC8 links to the
-# dashboard itself, so the cell answers "am I covered?" and ⌘-click goes to where the
-# answer matters. Two states rather than nag-only: a chip that only ever appears as a
-# warning leaves you unable to tell "covered" from "this statusline is too old to
-# know".
-#
-# Its own group rather than a member of the git one: it's a fact about the project,
-# not about the working tree, and it must not share a bracket whose over-wide shed
-# could drop it — or drop branch state to keep it. Last on purpose, too: it renders
-# on every refresh inside a git repo, and the packer spills whole groups in order, so
-# anywhere earlier would push git state onto a continuation line on a narrow pane to
-# make room for a cell that rarely changes. Trailing, it's the first thing to spill.
-# CLAUDE_STATUSLINE_HIDE_TELEM=1 drops it entirely.
-case "$telem_state" in
-  tagged) gadd "${TELEM_ON}$(osc8 "$TELEM_URL" 'telem tag')${RST}" 'telem tag' ;;
-  untagged) gadd "${TELEM_OFF}$(osc8 "$TELEM_URL" 'no telem tag')${RST}" 'no telem tag' ;;
-esac
-gflush
-
-# Pack the groups onto lines: the title starts line 1; each group joins the
-# current line when it still fits within `cols`, otherwise it starts a fresh
-# continuation line. One space sits between the title and the first group; groups
-# otherwise butt together (matching the original flush layout). When cols is
-# unknown there's no bound to enforce, so everything rides a single line.
-title_len=${#title_txt}
-cur_disp=$id_part cur_len=$title_len title_only=1
-i=0 nseg=${#seg_len[@]}
-while [ "$i" -lt "$nseg" ]; do
-  sep=0
-  [ "$title_only" -eq 1 ] && [ "$title_len" -gt 0 ] && sep=1
-  cost=$((sep + seg_len[i]))
-  if [ -n "$cols" ] && [ "$cur_len" -gt 0 ] && [ $((cur_len + cost)) -gt "$cols" ]; then
-    printf '%s\n' "$cur_disp"
-    cur_disp=${seg_disp[i]} cur_len=${seg_len[i]} title_only=0
-  else
-    [ "$sep" -eq 1 ] && cur_disp="${cur_disp} ${seg_disp[i]}" || cur_disp="${cur_disp}${seg_disp[i]}"
-    cur_len=$((cur_len + cost)) title_only=0
+R1_D="" R1_P=""
+G_D=() G_P=() G_N=0
+_BRANCH_FLOOR=6
+_bmax=${#branch}
+[ "$_bmax" -lt 1 ] && _bmax=1
+for _lvl in 0 1 2 3 4 5 6; do
+  build_row1 "$_lvl" "$_bmax"
+  _w=0
+  for ((_i = 0; _i < G_N; _i++)); do _w=$((_w + ${#G_P[_i]})); done
+  _w=$((_w + (G_N - 1) * 3))
+  [ "$_w" -le "$inner" ] && break
+  # Last resort: give back exactly the overflow from the branch name.
+  if [ "$_lvl" -ge 5 ]; then
+    _cut=$((_bmax - (_w - inner)))
+    [ "$_cut" -lt "$_BRANCH_FLOOR" ] && _cut=$_BRANCH_FLOOR
+    build_row1 "$_lvl" "$_cut"
   fi
-  i=$((i + 1))
 done
-printf '%s\n' "$cur_disp"
+assemble_row1
 
-# ── Line 2: CTX bar ─────────────────────────────────────────────────────────
-# Build the CTX trailing text FIRST (colored form for output, plus a plain twin
-# whose length feeds the shared bar reserve): the CTX line's trailing text is
-# usually the widest, so the bar can't be sized until it's known.
+# ── Row 2: the meters ───────────────────────────────────────────────────────
+# One texture, three hues, each bar labelled in front of it. No clock ticks and
+# no projection: the row states magnitude, not pace.
+NOW=$(date +%s 2> /dev/null)
+case "$NOW" in '' | *[!0-9]*) NOW=0 ;; esac
+
+# time_left <resets-at> <window-minutes> -> "5h0m" / "2d4h" / "12m"
+time_left() {
+  local resets=$1 wmin=$2 remain_sec remain_min
+  case "$resets" in '' | *[!0-9]*) resets=0 ;; esac
+  remain_sec=$((resets > NOW ? resets - NOW : 0))
+  remain_min=$((remain_sec / 60))
+  [ "$remain_min" -gt "$wmin" ] && remain_min=$wmin
+  if [ "$remain_min" -ge 1440 ]; then
+    printf '%dd%dh' "$((remain_min / 1440))" "$(((remain_min % 1440) / 60))"
+  elif [ "$remain_min" -ge 60 ]; then
+    printf '%dh%dm' "$((remain_min / 60))" "$((remain_min % 60))"
+  else
+    printf '%dm' "$remain_min"
+  fi
+}
+
 used_int=$(int_prefix "$used_pct")
 
-# Detail = absolute token readout + prompt-cache hit ratio (both from the live
-# context_window). used_percentage is input-only, so this adds the raw figure and
-# how much of the context is served from cache — a session-efficiency signal.
-ctx_detail="" ctx_detail_plain=""
+# The CTX label carries the autocompact warning. With the percentage gone there is
+# no number left to escalate, and the bar is one flat texture with no boundary to
+# mark — so the label itself is the threshold indicator: green while there is
+# room, amber as it closes, red once autocompact will fire on the next turn.
+ctx_lab_color=$GREEN
+if [ "$used_int" -ge "$ac" ]; then
+  ctx_lab_color="${BOLD}${RED}"
+elif [ "$used_int" -ge $((ac - 15)) ]; then
+  ctx_lab_color=$YELLOW
+fi
+
+# WINDOW_LOUD_PCT: a window's percentage is shown only at or above this. A bar
+# cannot tell you 73% from 78%, and that distinction only matters near the limit —
+# so the number costs its columns in the state that wants them and no other.
+WINDOW_LOUD_PCT=70
+
+m_lab=() m_labcol=() m_pct=() m_fill=() m_tail=()
+add_meter() {
+  local i=${#m_lab[@]}
+  m_lab[i]=$1 m_labcol[i]=$2 m_pct[i]=$3 m_fill[i]=$4 m_tail[i]=$5
+}
+
+ctx_tok=""
 if [ "$ctx_input_tokens" -gt 0 ]; then
   if [ "$ctx_window_size" -gt 0 ]; then
     ctx_tok="$(abbrev_num "$ctx_input_tokens")/$(abbrev_num "$ctx_window_size")"
   else
     ctx_tok="$(abbrev_num "$ctx_input_tokens")"
   fi
-  ctx_detail=" ${MUTED}${ctx_tok}${RST}"
-  ctx_detail_plain=" ${ctx_tok}"
-  if [ "$cache_read_tokens" -gt 0 ]; then
-    cache_pct=$((cache_read_tokens * 100 / ctx_input_tokens))
-    [ "$cache_pct" -gt 100 ] && cache_pct=100
-    ctx_detail="${ctx_detail} ${MUTED}cache ${cache_pct}%${RST}"
-    ctx_detail_plain="${ctx_detail_plain} cache ${cache_pct}%"
-  fi
 fi
+add_meter CTX "$ctx_lab_color" "$used_int" "$CTX_HUE" "$ctx_tok"
 
-# Escalate the pct color as it nears autocompact, and make the threshold active:
-# show live headroom (N%->AC) below it, a bracket chip [AC] once crossed.
-ctx_pct_color=$GREEN
-ctx_warn="" ctx_warn_plain=""
-if [ "$used_int" -ge "$ac" ]; then
-  ctx_pct_color=$RED
-  ctx_warn=" ${MUTED}[${AUTOCOMPACT}AC${MUTED}]${RST}"
-  ctx_warn_plain=" [AC]"
-else
-  [ "$used_int" -ge $((ac - 15)) ] && ctx_pct_color=$YELLOW
-  ctx_detail="${ctx_detail} ${MUTED}$((ac - used_int))%->AC${RST}"
-  ctx_detail_plain="${ctx_detail_plain} $((ac - used_int))%->AC"
-fi
-if [ -n "$exceeds_200k" ]; then
-  ctx_warn="${ctx_warn} ${MUTED}[${BOLD}${RED}200k+${RST}${MUTED}]${RST}"
-  ctx_warn_plain="${ctx_warn_plain} [200k+]"
-fi
-ctx_overhead=$((CTX_FIXED + ${#ctx_detail_plain} + ${#ctx_warn_plain}))
-
-# ── Lines 3-4: rate-limit windows — compute pieces, then render ──────────────
-# One `date` call for both windows (they share the same "now").
-NOW=$(date +%s)
-
-# 7d earns its own row only when it's the binding window (>=50% or higher than
-# 5h); otherwise it rides inline on the 5h line as a compact "7d N%" badge, so a
-# quiet week doesn't cost a whole bar row.
-five_int=$(int_prefix "$five_pct")
-seven_int=$(int_prefix "$seven_pct")
-show_7d=0
-if [ -n "$seven_pct" ] && [ -n "$seven_resets_at" ]; then
-  if [ "$seven_int" -ge 50 ] || [ "$seven_int" -gt "$five_int" ]; then show_7d=1; fi
-fi
-five_extra="" five_extra_plain=""
-if [ "$show_7d" -eq 0 ] && [ -n "$seven_pct" ]; then
-  five_extra=" ${MUTED}7d ${seven_int}%${RST}"
-  five_extra_plain=" 7d ${seven_int}%"
-fi
-
-# Registry of computed windows (parallel indexed arrays; bash 3.2 safe). Each
-# window's display pieces are computed up front — including its trailing-text
-# overhead — so the shared bar reserve can account for every bar line before any
-# is rendered.
-_win_lbl=() _win_pct=() _win_clock=() _win_proj=() _win_time=() _win_delta=() _win_extra=() _win_over=()
-_win_class=() _win_mkcol=()
-compute_window() {
-  local pct_str=$1 resets_str=$2 window_min=$3 label=$4 extra_disp=$5 extra_plain=$6
-  local pct
-  pct=$(int_prefix "$pct_str")
-  local resets=$resets_str
-  case "$resets" in *[!0-9]*) resets=0 ;; esac
-  local remain_sec=$((resets > NOW ? resets - NOW : 0))
-  local remain_min=$((remain_sec / 60))
-  [ "$remain_min" -gt "$window_min" ] && remain_min=$window_min
-  local clock_pct=$(((window_min - remain_min) * 100 / window_min))
-  local proj_pct=""
-  [ "$clock_pct" -gt 5 ] && proj_pct=$((pct * 100 / clock_pct))
-  local delta=$((pct - clock_pct)) delta_disp delta_plain
-  if [ "$delta" -gt 0 ]; then
-    delta_disp="${RED}+${delta}%${RST}"
-    delta_plain="+${delta}%"
-  elif [ "$delta" -lt 0 ]; then
-    delta_disp="${GREEN}${delta}%${RST}"
-    delta_plain="${delta}%"
-  else
-    delta_disp="${MUTED}0%${RST}"
-    delta_plain="0%"
-  fi
-
-  # Time remaining, framed as "… left" (no leading '-', which read as negative).
-  local time_label
-  if [ "$remain_min" -ge 1440 ]; then
-    printf -v time_label '%dd %dh' "$((remain_min / 1440))" "$(((remain_min % 1440) / 60))"
-  elif [ "$remain_min" -ge 60 ]; then
-    printf -v time_label '%dh %dm' "$((remain_min / 60))" "$((remain_min % 60))"
-  else
-    printf -v time_label '%dm' "$remain_min"
-  fi
-
-  # Row class drives the bar's glyph pair and gradient family; the clock pip's
-  # color goes with it, since each pip is chosen to stay legible against its own
-  # ramp (see MARKER / MARKER_7D above).
-  local cls mkcol
-  case "$label" in
-    7d) cls=7d mkcol=$MARKER_7D ;;
-    *) cls=5h mkcol=$MARKER ;;
-  esac
-
-  local n=${#_win_lbl[@]}
-  _win_lbl[n]=$label
-  _win_pct[n]=$pct
-  _win_clock[n]=$clock_pct
-  _win_proj[n]=$proj_pct
-  _win_time[n]=$time_label
-  _win_delta[n]=$delta_disp
-  _win_extra[n]=$extra_disp
-  _win_class[n]=$cls
-  _win_mkcol[n]=$mkcol
-  _win_over[n]=$((WIN_FIXED + ${#time_label} + ${#delta_plain} + ${#extra_plain}))
-}
-
-five_has_data=0
 if [ -n "$five_pct" ] && [ -n "$five_resets_at" ]; then
-  five_has_data=1
-  compute_window "$five_pct" "$five_resets_at" 300 "5h" "$five_extra" "$five_extra_plain"
+  _p=$(int_prefix "$five_pct")
+  _t=$(time_left "$five_resets_at" 300)
+  [ "$_p" -ge "$WINDOW_LOUD_PCT" ] && _t="${_p}% ${_t}"
+  add_meter 5h "$FIVE_HUE" "$_p" "$FIVE_HUE" "$_t"
 fi
-[ "$show_7d" -eq 1 ] && compute_window "$seven_pct" "$seven_resets_at" 10080 "7d" "" ""
-
-# Shared bar width: hold back the widest overhead across the CTX + window lines
-# so no line's trailing text can run off the right edge, plus one safety col.
-reserve=$ctx_overhead
-for _o in "${_win_over[@]}"; do [ "$_o" -gt "$reserve" ] && reserve=$_o; done
-reserve=$((reserve + BAR_SAFETY))
-pip_count=$(pip_count_for_width "$cols" "$reserve")
-
-# Render Line 2 (CTX).
-ctx_bar=$(render_bar "$used_int" "$ac" "" "$pip_count" "$AUTOCOMPACT" ctx)
-printf -v ctx_lbl '%-3s' "CTX"
-printf -v ctx_pct '%3s' "$used_int"
-printf '%s%s%s %s %s%s%%%s%s%s\n' "$MUTED" "$ctx_lbl" "$RST" "$ctx_bar" "$ctx_pct_color" "$ctx_pct" "$RST" "$ctx_detail" "$ctx_warn"
-
-# Render Lines 3-4 (rate-limit windows). The "no data yet" placeholder is a
-# 5h-labelled fallback; a 7d row can still render on its own when it has data.
-if [ "$five_has_data" -eq 0 ]; then
-  printf -v lbl '%-3s' "5h"
-  printf '%s%s%s %sno rate-limit data yet%s\n' "$MUTED" "$lbl" "$RST" "$MUTED" "$RST"
+if [ -n "$seven_pct" ] && [ -n "$seven_resets_at" ]; then
+  _p=$(int_prefix "$seven_pct")
+  _t=$(time_left "$seven_resets_at" 10080)
+  [ "$_p" -ge "$WINDOW_LOUD_PCT" ] && _t="${_p}% ${_t}"
+  add_meter 7d "$SEVEN_HUE" "$_p" "$SEVEN_HUE" "$_t"
 fi
-render_window() {
-  local i=$1 bar lbl pctf mkcol
-  mkcol=${_win_mkcol[i]}
-  bar=$(render_bar "${_win_pct[i]}" "${_win_clock[i]}" "${_win_proj[i]}" "$pip_count" "$mkcol" "${_win_class[i]}")
-  printf -v lbl '%-3s' "${_win_lbl[i]}"
-  printf -v pctf '%3s' "${_win_pct[i]}"
-  # The "time left" readout stays MARKER blue on BOTH rows rather than taking the
-  # row's pip color. MARKER_7D is pink because pink survives against 7d's blue bar
-  # fill — a constraint that doesn't apply to text sitting on the terminal
-  # background, where it would instead land pink immediately beside the red/green
-  # [+N%] delta and blunt the delta's own color coding.
-  printf '%s%s%s %s %s%s%%%s %s%s left%s [%s%s]%s%s\n' \
-    "$MUTED" "$lbl" "$RST" "$bar" "$MUTED" "$pctf" "$RST" \
-    "$MARKER" "${_win_time[i]}" "$RST" "${_win_delta[i]}" "$MUTED" "$RST" "${_win_extra[i]}"
+
+# Bars split what the labels and tails leave, CTX taking the remainder so the
+# widest meter is the one watched most. Below MIN_BAR the CTX token readout is
+# the first thing to go, then the meters render at the floor and the row is
+# allowed to be narrow rather than dropping a meter entirely — a missing meter
+# reads as "no data", which is a different and wrong statement.
+build_row2() {
+  local drop_tok=$1 drop_tails=$2 minbar=$3 nm=${#m_lab[@]} fixed=0 i w rem
+  [ "$nm" -eq 0 ] && return 1
+  for ((i = 0; i < nm; i++)); do
+    fixed=$((fixed + ${#m_lab[i]} + 1)) # label + space before bar
+    local t=${m_tail[i]}
+    [ "$drop_tails" -eq 1 ] && t=""
+    [ "$i" -eq 0 ] && [ "$drop_tok" -eq 1 ] && t=""
+    [ -n "$t" ] && fixed=$((fixed + 1 + ${#t}))
+    [ "$i" -gt 0 ] && fixed=$((fixed + ${#SEP_P}))
+  done
+  w=$(((inner - fixed) / nm))
+  [ "$w" -lt "$minbar" ] && return 1
+  rem=$((inner - fixed - w * nm))
+  R2_D="" R2_P=""
+  for ((i = 0; i < nm; i++)); do
+    local bw=$w t=${m_tail[i]}
+    [ "$i" -eq 0 ] && bw=$((w + rem))
+    [ "$drop_tails" -eq 1 ] && t=""
+    [ "$i" -eq 0 ] && [ "$drop_tok" -eq 1 ] && t=""
+    if [ "$i" -gt 0 ]; then
+      R2_D="${R2_D}${SEP_D}"
+      R2_P="${R2_P}${SEP_P}"
+    fi
+    R2_D="${R2_D}${m_labcol[i]}${m_lab[i]}${RST} $(render_bar "${m_pct[i]}" "$bw" "${m_fill[i]}")"
+    R2_P="${R2_P}${m_lab[i]} $(rep "$BAR_TRACK" "$bw")"
+    if [ -n "$t" ]; then
+      R2_D="${R2_D} ${MUTED}${t}${RST}"
+      R2_P="${R2_P} ${t}"
+    fi
+  done
+  return 0
 }
-i=0
-while [ "$i" -lt "${#_win_lbl[@]}" ]; do
-  render_window "$i"
-  i=$((i + 1))
-done
+
+R2_D="" R2_P=""
+build_row2 0 0 6 || build_row2 1 0 6 || build_row2 1 1 6 || build_row2 1 1 3 || {
+  _txt=""
+  for ((_i = 0; _i < ${#m_lab[@]}; _i++)); do
+    [ -n "$_txt" ] && _txt="${_txt} "
+    _txt="${_txt}${m_lab[_i]} ${m_pct[_i]}%"
+  done
+  [ -z "$_txt" ] && _txt="no usage data yet"
+  _txt=$(trunc_mid "$_txt" "$inner")
+  R2_D="${MUTED}${_txt}${RST}"
+  R2_P="$_txt"
+}
+
+# ── Emit ────────────────────────────────────────────────────────────────────
+# rule <left> <right> <label-disp> <label-width> [<right-label-disp> <right-width>]
+#
+# Widths are passed rather than measured because the display strings carry ANSI
+# and OSC8 payloads that ${#...} would count.
+rule() {
+  local fill
+  if [ -n "${5:-}" ]; then
+    fill=$((pcols - 7 - $4 - $6))
+    [ "$fill" -lt 1 ] && fill=1
+    printf '%s%s%s%s %s %s%s%s %s %s%s%s\n' \
+      "$FRAME" "$1" "$FR_H" "$RST" "$3" \
+      "$FRAME" "$(rep "$FR_H" "$fill")" "$RST" "$5" "$FRAME" "$2" "$RST"
+  else
+    fill=$((pcols - 5 - $4))
+    [ "$fill" -lt 1 ] && fill=1
+    printf '%s%s%s%s %s %s%s%s%s\n' \
+      "$FRAME" "$1" "$FR_H" "$RST" "$3" "$FRAME" \
+      "$(rep "$FR_H" "$fill")" "$2" "$RST"
+  fi
+}
+
+# content <display> <visible-length>
+content() {
+  printf '%s%s%s %s%s %s%s%s\n' \
+    "$FRAME" "$FR_V" "$RST" "$1" "$(rep ' ' "$((inner - $2))")" \
+    "$FRAME" "$FR_V" "$RST"
+}
+
+rule "$FR_TL" "$FR_TR" "$title_disp" "${#title_txt}" "$tag_d" "${#tag_p}"
+content "$R1_D" "${#R1_P}"
+
+rule "$FR_ML" "$FR_MR" "${BOLD}${TELEM_ON}USAGE${RST}" 5
+content "$R2_D" "${#R2_P}"
+printf '%s%s%s%s%s\n' "$FRAME" "$FR_BL" "$(rep "$FR_H" "$((pcols - 2))")" "$FR_BR" "$RST"
 
 # Always succeed: a statusline must never signal failure to Claude Code (a
 # trailing conditional would otherwise leak a non-zero status).
