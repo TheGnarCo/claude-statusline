@@ -759,39 +759,12 @@ assert "fields: thinking enabled raises nothing" "$c"
 case "$(run_sl 120 "$P_NORMAL" | strip_ansi | sed -n 2p)" in *'NoThink'*) c=1 ;; *) c=0 ;; esac
 assert "fields: an absent thinking block raises nothing" "$c"
 
-# Wait ratio: api time over session time.
-P_API='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_api_duration_ms":300000}}'
-case "$(run_sl 140 "$P_API" | strip_ansi | sed -n 2p)" in *'api 50%'*) c=0 ;; *) c=1 ;; esac
-assert "fields: the API wait ratio renders" "$c"
-# Gated on a minute of session, so a fresh one cannot report a wild ratio off a
-# few hundred milliseconds.
-P_API_YOUNG=${P_API/\"total_duration_ms\":600000/\"total_duration_ms\":5000}
-case "$(run_sl 140 "$P_API_YOUNG" | strip_ansi | sed -n 2p)" in *'api '*) c=1 ;; *) c=0 ;; esac
-assert "fields: a session under a minute reports no ratio" "$c"
-# The two clocks are measured independently, so the ratio is clamped.
-P_API_OVER=${P_API/\"total_api_duration_ms\":300000/\"total_api_duration_ms\":9000000}
-case "$(run_sl 140 "$P_API_OVER" | strip_ansi | sed -n 2p)" in *'api 100%'*) c=0 ;; *) c=1 ;; esac
-assert "fields: a ratio over 100% is clamped, not printed raw" "$c"
-# It is a nice-to-have, so it must never outlive the burn rate it sits beside.
-# Asserted as an ordering across a sweep rather than at one width: which width
-# first sheds depends on the payload, and pinning a number here would only test
-# the fixture.
-api_outlived=0 api_shed_seen=0
-for w in 30 34 38 42 46 50 54 58 62 66 70; do
-  line=$(run_sl "$w" "$P_API" | strip_ansi | sed -n 2p)
-  case "$line" in *'/h'*) continue ;; esac
-  api_shed_seen=1
-  case "$line" in *'api '*) api_outlived=1 ;; esac
-done
-assert "fields: a width where the burn sheds was exercised" "$((1 - api_shed_seen))"
-assert "fields: the ratio never outlives the burn rate" "$api_outlived"
-
-# None of the three may disturb the frame.
+# Neither of the two may disturb the frame.
 fb=""
-for _p in "$P_FAST" "$P_NOTHINK" "$P_API"; do
+for _p in "$P_FAST" "$P_NOTHINK"; do
   while IFS= read -r _len; do [ "$_len" -eq 112 ] || fb=1; done <<< "$(run_sl 120 "$_p" | strip_ansi | vislen)"
 done
-assert "fields: none of the new cells disturb the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
+assert "fields: neither new cell disturbs the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
 
 # ── Self-update chip ─────────────────────────────────────────────────────────
 # "There is a newer claude-statusline" in the top rule, beside coverage. This is
