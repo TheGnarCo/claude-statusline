@@ -694,10 +694,16 @@ build_row1() {
   G_N=$n
 }
 
-# Join the groups across the FULL row: first hard left, last hard right, the slack
-# shared evenly between the rules in between — space-between, not packed-left.
-# A row that ends in a long blank run reads as truncated; one that reaches both
-# edges reads as laid out.
+# Join the groups across the row: first hard left, the slack shared evenly between
+# the rules in between — space-between, not packed-left. A row that ends in a long
+# blank run reads as truncated; one that reaches both edges reads as laid out.
+#
+# The gap is CAPPED, though, because unbounded space-between degenerates: a wide
+# pane holding only two short groups pushed them to opposite walls with the rule
+# marooned ~40 columns from anything, which reads as a rendering fault rather than
+# as layout. Past the cap the row simply stops short of the right edge, which is
+# the lesser of the two wrongs.
+MAX_GROUP_GAP=16
 assemble_row1() {
   local i slack per extra rem left right
   R1_D="" R1_P=""
@@ -710,6 +716,10 @@ assemble_row1() {
   if [ "$G_N" -gt 1 ]; then
     per=$((slack / (G_N - 1)))
     rem=$((slack % (G_N - 1)))
+    if [ "$per" -ge "$MAX_GROUP_GAP" ]; then
+      per=$MAX_GROUP_GAP
+      rem=0
+    fi
   fi
   for ((i = 0; i < G_N; i++)); do
     if [ "$i" -gt 0 ]; then
