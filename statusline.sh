@@ -354,6 +354,11 @@ fi
 CACHE_DIR="${TMPDIR:-/tmp}/claude-statusline"
 CACHE_OK=0
 [ -n "$session_id" ] && CACHE_OK=1
+# The key becomes part of a FILE PATH, so it is restricted to characters that
+# cannot escape the cache directory. Claude Code sends a UUID, so this never
+# fires in practice — but "the input is trusted" is not a property this script
+# can verify, and every other stdin field here is already guarded the same way.
+case "$session_id" in *[!A-Za-z0-9_-]*) CACHE_OK=0 ;; esac
 case "${CLAUDE_STATUSLINE_NO_CACHE:-}" in '' | 0) ;; *) CACHE_OK=0 ;; esac
 
 NOW=$(date +%s 2> /dev/null)

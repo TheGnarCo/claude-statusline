@@ -613,6 +613,21 @@ still=$(head -1 "$CACHEDIR/claude-statusline/test-session-abc-git")
 assert "cache: a hit does not refresh its own timestamp" \
   "$([ "$stamped" = "$still" ] && echo 0 || echo 1)"
 
+# The key becomes part of a file path, so a session_id that could escape the
+# cache directory disables the cache instead of being written. Claude Code sends
+# a UUID and this never fires in practice — but "the input is trusted" is not a
+# property this script can verify.
+TRAV=$(mktemp -d)
+P_TRAV=${P_SESS/test-session-abc/..\/..\/..\/escaped}
+run_cached "$TRAV" "$P_TRAV" > /dev/null 2>&1
+esc_files=$(find "$TRAV" -type f 2> /dev/null | wc -l | tr -d ' ')
+assert "cache: a traversing session_id writes nothing anywhere" \
+  "$([ "$esc_files" -eq 0 ] && echo 0 || echo 1)"
+# ...and the panel still renders, because a disabled cache is not a failure.
+case "$(run_cached "$TRAV" "$P_TRAV" | strip_ansi)" in *'CTX'*) c=0 ;; *) c=1 ;; esac
+assert "cache: a rejected key still renders the panel" "$c"
+rm -rf "$TRAV"
+
 # Opting out writes nothing at all.
 OPTOUT=$(mktemp -d)
 run_cached "$OPTOUT" "$P_SESS" CLAUDE_STATUSLINE_NO_CACHE=1 > /dev/null 2>&1
