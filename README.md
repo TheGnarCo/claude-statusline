@@ -154,6 +154,8 @@ timer keeps them live. Omit it to update only on events.
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Autocompact threshold, 1–100. Defaults to 80. Drives the CTX label's escalation. |
 | `CLAUDE_STATUSLINE_CHROME_MARGIN` | Columns held back from the pane's right edge so the panel doesn't overrun Claude's own UI hints. Defaults to 8; `0` fills edge to edge. |
 | `CLAUDE_STATUSLINE_HIDE_TELEM` | `1` hides the coverage tag (for anyone not sending OTEL telemetry, where it has nothing to say). Unset and `0` both mean show. |
+| `CLAUDE_STATUSLINE_GIT_CACHE_TTL` | Seconds a gathered git state stays warm. Defaults to 3. `0` re-gathers every render. |
+| `CLAUDE_STATUSLINE_NO_CACHE` | `1` disables caching entirely. |
 | `NO_COLOR` | Suppresses all ANSI. |
 
 ## The subagent statusline
@@ -163,14 +165,37 @@ statusline rather than an add-on. It drives Claude Code's **agent panel** — th
 per-task rows shown for spawned subagents — and is wired separately, via
 `subagentStatusLine`.
 
+## Caching
+
+Claude Code re-runs the statusline on every event — several times a second during
+an active turn — and the git calls are the only genuinely slow thing on the row.
+A short-lived cache collapses those bursts: **~45% faster per render** in this
+repo (99ms → 54ms measured over 20 renders).
+
+It is keyed on the `session_id` Claude Code passes on stdin, which is stable for
+the life of a session and unique across concurrent ones. Not the pid — that
+changes on every invocation, so the cache would never hit and would be a slower
+no-op. Without a `session_id` the cache is simply disabled.
+
+The TTL is deliberately short (3s). The working tree is what the agent is actively
+changing, so a long TTL would show you a stale working copy — the one thing this
+row exists to report. Three seconds collapses an event burst and nothing more, and
+any idle refresh still reads the tree.
+
+Entries live under `${TMPDIR}/claude-statusline/` and hold their own timestamp in
+the first line, because `stat` takes `-f` on BSD and `-c` on GNU. A cache hit never
+refreshes that timestamp, so a busy session can't keep an entry alive indefinitely.
+Corrupt, unreadable and unwritable caches all degrade to a live gather rather than
+to a broken panel.
+
 ## Notes
 
 - The 5h/7d meters appear only once the session has made a request that populates
   the rate-limit fields.
-- The statusline writes nothing to disk. Every cell renders from the JSON Claude
-  Code passes on stdin, except the coverage tag, which also reads the repo's
-  `.claude/settings.json` — and only when the attribute isn't already in the
-  environment.
+- Apart from the cache above, the statusline writes nothing. Every cell renders
+  from the JSON Claude Code passes on stdin, except the coverage tag, which also
+  reads the repo's `.claude/settings.json` — and only when the attribute isn't
+  already in the environment.
 
 ## Tests
 
