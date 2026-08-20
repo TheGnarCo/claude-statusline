@@ -242,6 +242,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "used_pct=\(.context_window.used_percentage // "" | tostring)",
   "ctx_input_tokens=\(.context_window.total_input_tokens // 0 | tostring)",
   "ctx_window_size=\(.context_window.context_window_size // 0 | tostring)",
+  "session_id=\(.session_id // "")",
   "worktree_name=\(.worktree.name // "")",
   "project_dir=\(.workspace.project_dir // "")",
   "cwd=\(.workspace.current_dir // "")",
@@ -262,8 +263,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "cols=\((.columns // .terminal.columns) // "" | tostring)"
 ' 2> /dev/null)
 
-used_pct="" ctx_input_tokens=0 ctx_window_size=0
-worktree_name_input="" project_dir="" cwd_input=""
+session_id="" worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
 lines_added=0
@@ -278,6 +278,7 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     used_pct) used_pct=$_v ;;
     ctx_input_tokens) ctx_input_tokens=$_v ;;
     ctx_window_size) ctx_window_size=$_v ;;
+    session_id) session_id=$_v ;;
     worktree_name) worktree_name_input=$_v ;;
     project_dir) project_dir=$_v ;;
     cwd) cwd_input=$_v ;;
@@ -337,14 +338,106 @@ if [ -n "$cols" ]; then
   [ "$cols" -lt 1 ] && cols=1
 fi
 
-# ── Gather git state (self-contained; deliberately not the git-data cache) ──
+# ── Cache ───────────────────────────────────────────────────────────────────
+# Claude Code re-runs this on every event — several times a second during an
+# active turn — and the git calls below are the only genuinely slow thing on the
+# row. A short-lived cache collapses those bursts without making the display
+# stale: the TTL is small enough that any idle refresh still reads the tree.
+#
+# Keyed on session_id, which is stable for the life of a session and unique
+# across concurrent ones. NOT $$, os.getpid() or similar: those change on every
+# invocation, so the cache would never hit and the whole thing would be a slower
+# no-op. Without a session_id the cache is simply disabled rather than guessed at.
+#
+# The timestamp lives in the file's FIRST LINE rather than being read from mtime:
+# `stat` takes -f on BSD and -c on GNU, and this script targets both.
+CACHE_DIR="${TMPDIR:-/tmp}/claude-statusline"
+CACHE_OK=0
+[ -n "$session_id" ] && CACHE_OK=1
+case "${CLAUDE_STATUSLINE_NO_CACHE:-}" in '' | 0) ;; *) CACHE_OK=0 ;; esac
+
+NOW=$(date +%s 2> /dev/null)
+case "$NOW" in '' | *[!0-9]*) NOW=0 CACHE_OK=0 ;; esac
+
+# cache_read <key> <ttl-seconds> — prints the payload and returns 0 when fresh.
+cache_read() {
+  [ "$CACHE_OK" -eq 1 ] || return 1
+  local f=$CACHE_DIR/$session_id-$1 ts="" line first=1 out=""
+  [ -f "$f" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$first" -eq 1 ]; then
+      ts=$line
+      first=0
+      continue
+    fi
+    out="${out}${line}
+"
+  done < "$f"
+  case "$ts" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$((NOW - ts))" -ge "$2" ] && return 1
+  [ "$((NOW - ts))" -lt 0 ] && return 1 # clock moved backwards; re-gather
+  printf '%s' "$out"
+}
+
+# cache_write <key> <payload> — best effort, never fatal. Writes to a temp file
+# and renames, so a refresh that lands mid-write reads the old value rather than
+# half of the new one.
+cache_write() {
+  [ "$CACHE_OK" -eq 1 ] || return 0
+  mkdir -p "$CACHE_DIR" 2> /dev/null || return 0
+  local f=$CACHE_DIR/$session_id-$1
+  printf '%s\n%s' "$NOW" "$2" > "$f.$$" 2> /dev/null || {
+    rm -f "$f.$$" 2> /dev/null
+    return 0
+  }
+  mv -f "$f.$$" "$f" 2> /dev/null || rm -f "$f.$$" 2> /dev/null
+  return 0
+}
+
+# ── Gather git state ────────────────────────────────────────────────────────
 # GIT_OPTIONAL_LOCKS=0: this runs on every refresh in the background — it must
 # never contend for index.lock with the session's own git rebase/add.
 export GIT_OPTIONAL_LOCKS=0
 git_is_repo=0 branch="" repo_https="" repo_name="" repo_slug="" git_worktree_name=""
 ahead=0 behind=0 staged=0 unstaged=0 untracked=0 conflict=0 stash=0
+topl=""
 
-if topl=$(git rev-parse --show-toplevel 2> /dev/null) && [ -n "$topl" ]; then
+# Short by design. The tree is what the agent is actively changing, so a long TTL
+# would show you a stale working copy — the one thing this row exists to report.
+# 3s collapses an event burst and nothing more.
+GIT_CACHE_TTL=3
+case "${CLAUDE_STATUSLINE_GIT_CACHE_TTL:-}" in
+  '' | *[!0-9]*) ;;
+  *) GIT_CACHE_TTL=$CLAUDE_STATUSLINE_GIT_CACHE_TTL ;;
+esac
+
+git_cached=0
+if _gc=$(cache_read git "$GIT_CACHE_TTL"); then
+  git_cached=1
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in *=*) ;; *) continue ;; esac
+    _gk=${_line%%=*}
+    _gv=${_line#*=}
+    case "$_gk" in
+      git_is_repo) git_is_repo=$_gv ;;
+      topl) topl=$_gv ;;
+      branch) branch=$_gv ;;
+      repo_https) repo_https=$_gv ;;
+      repo_name) repo_name=$_gv ;;
+      repo_slug) repo_slug=$_gv ;;
+      git_worktree_name) git_worktree_name=$_gv ;;
+      ahead) ahead=$_gv ;;
+      behind) behind=$_gv ;;
+      staged) staged=$_gv ;;
+      unstaged) unstaged=$_gv ;;
+      untracked) untracked=$_gv ;;
+      conflict) conflict=$_gv ;;
+      stash) stash=$_gv ;;
+    esac
+  done <<< "$_gc"
+fi
+
+if [ "$git_cached" -eq 0 ] && topl=$(git rev-parse --show-toplevel 2> /dev/null) && [ -n "$topl" ]; then
   git_is_repo=1
   gdir=$(git rev-parse --git-dir 2> /dev/null)
   cdir=$(git rev-parse --git-common-dir 2> /dev/null)
@@ -434,6 +527,26 @@ if topl=$(git rev-parse --show-toplevel 2> /dev/null) && [ -n "$topl" ]; then
   fi
 
   stash=$(git stash list 2> /dev/null | grep -c .)
+fi
+
+# Persist for the next few renders. Written only on a real gather, so a cache hit
+# never refreshes its own timestamp — otherwise a busy session would keep the
+# entry alive indefinitely and never re-read the tree.
+if [ "$git_cached" -eq 0 ]; then
+  cache_write git "git_is_repo=$git_is_repo
+topl=$topl
+branch=$branch
+repo_https=$repo_https
+repo_name=$repo_name
+repo_slug=$repo_slug
+git_worktree_name=$git_worktree_name
+ahead=$ahead
+behind=$behind
+staged=$staged
+unstaged=$unstaged
+untracked=$untracked
+conflict=$conflict
+stash=$stash"
 fi
 
 # ── Telemetry tag (project.name OTEL attribute) ─────────────────────────────
@@ -787,9 +900,6 @@ assemble_row1
 # ── Row 2: the meters ───────────────────────────────────────────────────────
 # One texture, three hues, each bar labelled in front of it. No clock ticks and
 # no projection: the row states magnitude, not pace.
-NOW=$(date +%s 2> /dev/null)
-case "$NOW" in '' | *[!0-9]*) NOW=0 ;; esac
-
 # time_left <resets-at> <window-minutes> -> "5h0m" / "2d4h" / "12m"
 time_left() {
   local resets=$1 wmin=$2 remain_sec remain_min

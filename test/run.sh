@@ -563,6 +563,101 @@ assert "links: cmux output keeps the same geometry" "$([ -z "$cm_bad" ] && echo 
 
 cd "$NONGIT" || exit 2
 
+# ── Cache ────────────────────────────────────────────────────────────────────
+# Keyed on session_id, so every case here supplies one AND its own TMPDIR — the
+# suite must never read or write a real session's cache, and two cases must not
+# see each other's entries.
+CACHEDIR=$(mktemp -d)
+P_SESS='{"session_id":"test-session-abc","workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+
+run_cached() { # run_cached <tmpdir> <session-payload> [extra-env-assignments...]
+  local td=$1 payload=$2
+  shift 2
+  env TMPDIR="$td" COLUMNS=120 HOME=/home/tester COLORTERM=truecolor \
+    NO_COLOR='' CMUX_SURFACE_ID='' OTEL_RESOURCE_ATTRIBUTES='' \
+    CLAUDE_STATUSLINE_HIDE_TELEM='' "$@" bash "$SCRIPT" <<< "$payload"
+}
+
+# A render inside a repo writes exactly one entry, named for the session.
+cd "$TELEMREPO" || exit 2
+rm -rf "${CACHEDIR:?}/claude-statusline"
+run_cached "$CACHEDIR" "$P_SESS" > /dev/null 2>&1
+entries=$(find "$CACHEDIR/claude-statusline" -type f 2> /dev/null | wc -l | tr -d ' ')
+assert "cache: a render writes one entry" "$([ "$entries" -eq 1 ] && echo 0 || echo 1)"
+case "$(find "$CACHEDIR/claude-statusline" -type f 2> /dev/null)" in
+  *test-session-abc-git) c=0 ;;
+  *) c=1 ;;
+esac
+assert "cache: the entry is keyed on the session id" "$c"
+
+# The cached render must equal the uncached one. A cache that changes what you
+# see is worse than no cache, and this is the assertion that would catch a
+# serialisation bug in the git state round-trip.
+warm=$(run_cached "$CACHEDIR" "$P_SESS" | strip_ansi)
+cold=$(run_cached "$CACHEDIR" "$P_SESS" CLAUDE_STATUSLINE_NO_CACHE=1 | strip_ansi)
+assert "cache: a warm read renders identically to a cold gather" \
+  "$([ "$warm" = "$cold" ] && echo 0 || echo 1)"
+
+# TTL 0 means every render re-gathers, so the entry's timestamp keeps moving.
+before=$(head -1 "$CACHEDIR/claude-statusline/test-session-abc-git")
+run_cached "$CACHEDIR" "$P_SESS" CLAUDE_STATUSLINE_GIT_CACHE_TTL=0 > /dev/null 2>&1
+after=$(head -1 "$CACHEDIR/claude-statusline/test-session-abc-git")
+assert "cache: TTL 0 re-gathers rather than serving a hit" \
+  "$([ -n "$after" ] && [ "$after" -ge "$before" ] && echo 0 || echo 1)"
+
+# A hit must NOT refresh its own timestamp: if it did, a busy session would keep
+# the entry alive forever and never re-read the working tree.
+stamped=$(head -1 "$CACHEDIR/claude-statusline/test-session-abc-git")
+run_cached "$CACHEDIR" "$P_SESS" CLAUDE_STATUSLINE_GIT_CACHE_TTL=600 > /dev/null 2>&1
+still=$(head -1 "$CACHEDIR/claude-statusline/test-session-abc-git")
+assert "cache: a hit does not refresh its own timestamp" \
+  "$([ "$stamped" = "$still" ] && echo 0 || echo 1)"
+
+# Opting out writes nothing at all.
+OPTOUT=$(mktemp -d)
+run_cached "$OPTOUT" "$P_SESS" CLAUDE_STATUSLINE_NO_CACHE=1 > /dev/null 2>&1
+n=$(find "$OPTOUT/claude-statusline" -type f 2> /dev/null | wc -l | tr -d ' ')
+assert "cache: CLAUDE_STATUSLINE_NO_CACHE=1 writes nothing" "$([ "$n" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$OPTOUT"
+
+# No session_id, no cache — the key would have to be guessed, so it is disabled.
+NOSESS=$(mktemp -d)
+P_NOSESS='{"workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+run_cached "$NOSESS" "$P_NOSESS" > /dev/null 2>&1
+n=$(find "$NOSESS/claude-statusline" -type f 2> /dev/null | wc -l | tr -d ' ')
+assert "cache: a payload without session_id writes nothing" "$([ "$n" -eq 0 ] && echo 0 || echo 1)"
+rm -rf "$NOSESS"
+
+# Concurrent sessions must not read each other's state.
+P_SESS2=${P_SESS/test-session-abc/test-session-xyz}
+run_cached "$CACHEDIR" "$P_SESS2" > /dev/null 2>&1
+n=$(find "$CACHEDIR/claude-statusline" -type f 2> /dev/null | wc -l | tr -d ' ')
+assert "cache: a second session gets its own entry" "$([ "$n" -eq 2 ] && echo 0 || echo 1)"
+
+# A corrupt entry must degrade to a gather, not to a broken panel. This is the
+# path a truncated write or a half-cleaned temp dir would take.
+printf 'not-a-timestamp\ngarbage\n' > "$CACHEDIR/claude-statusline/test-session-abc-git"
+corrupt=$(run_cached "$CACHEDIR" "$P_SESS" | strip_ansi)
+c=1
+case "$corrupt" in *'╭─'*) case "$corrupt" in *'CTX'*) c=0 ;; esac ;; esac
+assert "cache: a corrupt entry falls back to a live gather" "$c"
+cb=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || cb=1; done <<< "$(printf '%s\n' "$corrupt" | vislen)"
+assert "cache: a corrupt entry leaves the geometry intact" "$([ -z "$cb" ] && echo 0 || echo 1)"
+
+# An unwritable cache dir must not fail the render either.
+RO=$(mktemp -d)
+mkdir -p "$RO/claude-statusline"
+chmod 500 "$RO/claude-statusline"
+ro_out=$(run_cached "$RO" "$P_SESS" 2>&1)
+case "$ro_out" in *'╭─'*) c=0 ;; *) c=1 ;; esac
+assert "cache: an unwritable cache dir still renders" "$c"
+chmod 700 "$RO/claude-statusline"
+rm -rf "$RO"
+
+rm -rf "$CACHEDIR"
+cd "$NONGIT" || exit 2
+
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
   OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
