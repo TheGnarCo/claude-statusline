@@ -5,6 +5,107 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v2.0.0
+
+**Breaking.** The statusline is now a framed panel, and it needs a font with Unicode block
+elements and box drawing. There is no ASCII fallback.
+
+```
+v1.2.0  CTX ~~~~~~~~~~~~~~~~................|.......  42% 84k/200k 38%->AC
+        5h  |############################-----------  73% 5h 0m left [+73%]
+        7d  |:::::::::::::::::::::::________________  60% 7d 0h left [+60%]
+
+v2.0.0  ╭─ TheGnarCo/claude-statusline ──────────────────────── tagged ╮
+        │ @main ?2 +120/-45    │    Opus 4.8 Hi    │    $1.23  $7.38/h │
+        ├─ USAGE ──────────────────────────────────────────────────────┤
+        │ CTX ▒▒░░░░░ 84k/200k │ 5h ▒▒▒▒▒░░ 73% 5h0m │ 7d ▒▒▒▒░░░ 7d0h │
+        ╰──────────────────────────────────────────────────────────────╯
+```
+
+Two rows of content instead of three or four bars. **Row 1 is what this session is** — repo,
+branch, working tree, model, spend. **Row 2 is what it is spending** — context and both
+rate-limit windows, side by side. The top rule carries what is true of the whole panel: the
+repo, and whether its usage is attributed in telemetry.
+
+### Why a frame
+
+Three bars stacked down the left edge read as three separate readouts that happened to be
+adjacent. A frame says they are one object, and it earns its lines: the top rule carries the
+repo name, which hands 28 columns back to the text row, and the `USAGE` rule labels the split
+between what the session *is* and what it is *costing*. Vertical rules in burnt Gnar orange
+divide the groups, so brackets are gone — spacing and colour do that work now.
+
+### Why the marks changed, and what it costs
+
+Every meter is one texture: `▒` spent over `░` untouched. The meters are told apart by the
+label immediately in front of each and by colour, not by glyph.
+
+That **reverses v1.2.0 deliberately.** Per-row glyph tiers existed because bars stacked on
+separate rows had no adjacent label to disambiguate them — you located a row by recognising
+its texture. Side by side, each bar has its own label an inch to its left, so shape has
+nothing left to disambiguate and the three can share one.
+
+The cost is real and worth stating plainly: **this drops the pure-ASCII promise**, which
+every version through v1.2.0 sold as a feature. These are CP437-heritage single-width
+characters, present in essentially every terminal font for forty years, so the column
+arithmetic stays deterministic — but a font that substitutes a double-width glyph will
+misalign the frame. An opt-in ASCII mode was considered and declined; if it is ever needed,
+it is a fallback to add, not a layout to change.
+
+### What is gone
+
+Clock pips, the burn projection, pace deltas, per-row gradients, the `[AC]` and `[200k+]`
+chips, the prompt-cache ratio, the redundant `1M` flag, and bracket groups. The row states
+**magnitude, not pace**.
+
+Percentages are gone too, except where a bar cannot substitute. `CTX` shows `84k/200k`, which
+is the same fact stated more precisely. A window shows its percentage **only at 70% or above**
+— a bar cannot separate 73% from 78%, and that only matters near the limit, so the number
+costs its columns in the state that wants them and no other.
+
+The autocompact threshold moved onto the **`CTX` label**, which escalates green → amber → bold
+red as it closes. With the percentage gone there was no number left to escalate, and a
+single-texture bar has no boundary to mark.
+
+### Faster, and it now knows about updates
+
+Git state is cached per session (`session_id`, 3s TTL), which is **~45% faster per render** —
+99ms to 54ms measured over 20 renders. Claude Code re-runs the statusline on every event,
+several times a second during an active turn, and the git calls were the only genuinely slow
+thing on the row. The TTL is short on purpose: the working tree is what the agent is actively
+changing, so a long one would show a stale working copy.
+
+An `↑2.1.240` chip appears when the running Claude Code is behind the latest release. It is
+checked at most once a day, detached with a 5-second timeout, and **never blocks a render** —
+the first thing in this statusline that touches the network, so it is opt-out via
+`CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1` and documented rather than buried.
+
+Three fields that were always on stdin now render: `Fast` when fast mode is on, `NoThink` when
+extended thinking is explicitly off, and `api N%` — the share of the session spent blocked on
+the API. All three are silent in their normal state.
+
+### The agent panel was broken and nobody could tell
+
+`subagent-statusline.sh` had been a **silent no-op**. It emitted a `{"tasks":[...]}` envelope;
+Claude Code validates each stdout line against `{id, content}`, logs a schema error visible
+only under `claude --debug`, and falls back to the default row. It has been rewritten to the
+current contract and now renders each task in the panel's own marks:
+
+```
+Explore  ▒▒░░░░░░░░ 42k  opus-5 high  2m05s
+Review   ▒▒▒▒▒▒▒▒▒░ 900k              1h01m
+```
+
+It also resolves colour the way the main panel does. Previously it ignored `NO_COLOR` entirely
+and drew a 256-colour purple where the main panel drew a truecolor one — the same meter in two
+shades.
+
+### Upgrading
+
+Nothing to configure. `install.sh` and the `/gnar-statusline` command are unchanged, and there
+are no new dependencies — still just `git` and `jq`. If your terminal font renders `▒ ░ ╭ ─ │`
+at single width, which is nearly all of them, the panel will line up.
+
 ## v1.2.0
 
 Each bar row now has its own vocabulary. `CTX` is a `~` wave on dots over a purple gradient,
