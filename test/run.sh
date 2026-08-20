@@ -774,6 +774,82 @@ for _p in "$P_FAST" "$P_NOTHINK" "$P_API"; do
 done
 assert "fields: none of the new cells disturb the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
 
+# ── Activity ─────────────────────────────────────────────────────────────────
+# The last tool run, read from the transcript and rendered in the USAGE rule.
+ACT=$(mktemp -d)
+TRANSCRIPT="$ACT/t.jsonl"
+act_line() { # act_line <extra-env...>
+  env TMPDIR="$ACT" COLUMNS=120 HOME=/home/tester COLORTERM=truecolor \
+    NO_COLOR='' CMUX_SURFACE_ID='' OTEL_RESOURCE_ATTRIBUTES='' \
+    CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 "$@" \
+    bash "$SCRIPT" <<< "$P_ACT" | strip_ansi | sed -n 3p
+}
+mk_transcript() {
+  : > "$TRANSCRIPT"
+  for t in "$@"; do
+    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s"}]}}\n' "$t" >> "$TRANSCRIPT"
+  done
+}
+
+P_ACT='{"session_id":"act-1","transcript_path":"'"$TRANSCRIPT"'","workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
+
+mk_transcript Read Grep Edit
+rm -rf "${ACT:?}/claude-statusline"
+case "$(act_line)" in *' Edit '*) c=0 ;; *) c=1 ;; esac
+assert "activity: the LAST tool use is what renders" "$c"
+# ...and it sits in the USAGE rule, not on a row of its own — the panel stays five
+# lines, which is the entire reason it lives in a rule.
+n=$(env TMPDIR="$ACT" COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
+  CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 bash "$SCRIPT" <<< "$P_ACT" | wc -l | tr -d ' ')
+assert "activity: the panel is still five lines" "$([ "$n" -eq 5 ] && echo 0 || echo 1)"
+
+mk_transcript Read Grep Bash
+rm -rf "${ACT:?}/claude-statusline"
+case "$(act_line)" in *' Bash '*) c=0 ;; *) c=1 ;; esac
+assert "activity: it follows the transcript rather than caching forever" "$c"
+
+# Degradation. None of these may break the panel or leak a partial read.
+: > "$TRANSCRIPT"
+rm -rf "${ACT:?}/claude-statusline"
+case "$(act_line)" in *'USAGE'*) c=0 ;; *) c=1 ;; esac
+assert "activity: an empty transcript still renders the rule" "$c"
+
+printf 'not json at all\n{"broken\n' > "$TRANSCRIPT"
+rm -rf "${ACT:?}/claude-statusline"
+line=$(act_line)
+case "$line" in *'USAGE'*) c=0 ;; *) c=1 ;; esac
+assert "activity: a malformed transcript renders the rule anyway" "$c"
+
+# One bad line must not abort the pass — the good tool_use after it still wins.
+printf 'garbage\n' > "$TRANSCRIPT"
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write"}]}}\n' >> "$TRANSCRIPT"
+rm -rf "${ACT:?}/claude-statusline"
+case "$(act_line)" in *' Write '*) c=0 ;; *) c=1 ;; esac
+assert "activity: one malformed line does not abort the whole read" "$c"
+
+P_ACT_MISSING=${P_ACT/$TRANSCRIPT/\/nope\/nowhere.jsonl}
+missing=$(env TMPDIR="$ACT" COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
+  CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 bash "$SCRIPT" <<< "$P_ACT_MISSING" 2>&1 | strip_ansi)
+case "$missing" in *'USAGE'*) c=0 ;; *) c=1 ;; esac
+assert "activity: an unreadable transcript renders the panel" "$c"
+
+# Opt-out.
+mk_transcript Read Edit
+rm -rf "${ACT:?}/claude-statusline"
+case "$(act_line CLAUDE_STATUSLINE_NO_ACTIVITY=1)" in *' Edit '*) c=1 ;; *) c=0 ;; esac
+assert "activity: CLAUDE_STATUSLINE_NO_ACTIVITY=1 silences it" "$c"
+
+# Geometry, with and without the cell.
+mk_transcript Read Edit
+rm -rf "${ACT:?}/claude-statusline"
+ab=""
+while IFS= read -r _len; do [ "$_len" -eq 112 ] || ab=1; done <<< "$(env TMPDIR="$ACT" COLUMNS=120 \
+  HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 \
+  bash "$SCRIPT" <<< "$P_ACT" | strip_ansi | vislen)"
+assert "activity: the cell leaves the geometry intact" "$([ -z "$ab" ] && echo 0 || echo 1)"
+
+rm -rf "$ACT"
+
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
   OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)

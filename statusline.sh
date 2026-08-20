@@ -242,6 +242,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "cache_read_tokens=\(.context_window.current_usage.cache_read_input_tokens // 0 | tostring)",
   "session_id=\(.session_id // "")",
   "cc_version=\(.version // "")",
+  "transcript_path=\(.transcript_path // "")",
   "fast_mode=\(if .fast_mode == true then "1" else "" end)",
   "thinking_off=\(if .thinking.enabled == false then "1" else "" end)",
   "api_duration_ms=\(.cost.total_api_duration_ms // 0 | tostring)",
@@ -266,7 +267,7 @@ fields=$(printf '%s' "$input" | jq -r '
 ' 2> /dev/null)
 
 used_pct="" ctx_input_tokens=0 ctx_window_size=0 cache_read_tokens=0
-session_id="" cc_version="" fast_mode="" thinking_off="" api_duration_ms=0
+session_id="" cc_version="" transcript_path="" fast_mode="" thinking_off="" api_duration_ms=0
 worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
@@ -285,6 +286,7 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     cache_read_tokens) cache_read_tokens=$_v ;;
     session_id) session_id=$_v ;;
     cc_version) cc_version=$_v ;;
+    transcript_path) transcript_path=$_v ;;
     fast_mode) fast_mode=$_v ;;
     thinking_off) thinking_off=$_v ;;
     api_duration_ms) api_duration_ms=$_v ;;
@@ -788,6 +790,53 @@ if [ "$update_enabled" -eq 1 ]; then
   fi
 fi
 
+# ── Activity ────────────────────────────────────────────────────────────────
+# The last tool this session ran, read from the transcript Claude Code names on
+# stdin. It is the only cell here derived from anything but the payload, and it
+# answers the one question the payload cannot: what is it doing right now.
+#
+# It rides in the USAGE rule opposite the label — the rule already exists and had
+# empty space, so this costs ZERO extra lines. That is the whole reason it is
+# there rather than on a row of its own.
+#
+# Cost control, in order of how much they matter:
+#   - `tail` bounds the read to the last few hundred lines, so a transcript that
+#     has grown to megabytes costs the same as a fresh one.
+#   - the same session-keyed cache as git state holds the result, so an event
+#     burst pays for one read rather than one per render.
+#   - a missing, unreadable or malformed transcript renders nothing at all.
+ACTIVITY_TTL=3
+ACTIVITY_TAIL=400
+
+activity_enabled=1
+case "${CLAUDE_STATUSLINE_NO_ACTIVITY:-}" in '' | 0) ;; *) activity_enabled=0 ;; esac
+[ -n "$transcript_path" ] && [ -r "$transcript_path" ] || activity_enabled=0
+
+activity=""
+if [ "$activity_enabled" -eq 1 ]; then
+  if _act=$(cache_read activity "$ACTIVITY_TTL"); then
+    activity=${_act%%
+*}
+  else
+    # `select(.type? == "tool_use")` over every content block in the window, then
+    # the LAST one. -R -n with fromjson? keeps a single malformed line from
+    # aborting the whole pass, which a bare `jq -s` would do.
+    activity=$(tail -n "$ACTIVITY_TAIL" "$transcript_path" 2> /dev/null |
+      jq -R -n -r '
+        [ inputs
+          | (fromjson? // empty)
+          | .message?.content?
+          | select(type == "array")
+          | .[]
+          | select(.type? == "tool_use")
+          | .name? // empty
+        ] | last // ""
+      ' 2> /dev/null)
+    case "$activity" in *[!A-Za-z0-9_-]*) activity="" ;; esac
+    cache_write activity "$activity"
+  fi
+fi
+
 # ── Row 1 ───────────────────────────────────────────────────────────────────
 # Built at a shed level; the caller walks levels up until the row fits. Sets
 # R1_D (display) and R1_P (its visible-length twin).
@@ -1162,7 +1211,12 @@ content() {
 rule "$FR_TL" "$FR_TR" "$title_disp" "${#title_txt}" "$tag_d" "${#tag_p}"
 content "$R1_D" "${#R1_P}"
 
-rule "$FR_ML" "$FR_MR" "${BOLD}${TELEM_ON}USAGE${RST}" 5
+_act_d="" _act_p=""
+if [ -n "$activity" ]; then
+  _act_p=$activity
+  _act_d="${MUTED}${activity}${RST}"
+fi
+rule "$FR_ML" "$FR_MR" "${BOLD}${TELEM_ON}USAGE${RST}" 5 "$_act_d" "${#_act_p}"
 content "$R2_D" "${#R2_P}"
 printf '%s%s%s%s%s\n' "$FRAME" "$FR_BL" "$(rep "$FR_H" "$((pcols - 2))")" "$FR_BR" "$RST"
 
