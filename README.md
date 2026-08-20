@@ -53,6 +53,8 @@ blank. Each group drops out entirely when it has nothing to say.
 - **config** — model (cyan), reasoning effort (green, as `Lo`/`Med`/`Hi`/`XHi`/`Max`
   — you read it against the other tiers, not as a word), and output style
   (magenta), which appears only when a **non-default** style is set.
+- **update** — `↑2.1.240` (yellow) when a newer Claude Code exists. Absent when
+  you're current, which is almost always. See [Update check](#update-check).
 - **spend** — total cost and per-hour burn (green).
 
 When the pane narrows, the row sheds cheapest-loss-first, one rung at a time:
@@ -168,6 +170,7 @@ timer keeps them live. Omit it to update only on events.
 | `CLAUDE_STATUSLINE_HIDE_TELEM` | `1` hides the coverage tag (for anyone not sending OTEL telemetry, where it has nothing to say). Unset and `0` both mean show. |
 | `CLAUDE_STATUSLINE_GIT_CACHE_TTL` | Seconds a gathered git state stays warm. Defaults to 3. `0` re-gathers every render. |
 | `CLAUDE_STATUSLINE_NO_CACHE` | `1` disables caching entirely. |
+| `CLAUDE_STATUSLINE_NO_UPDATE_CHECK` | `1` disables the daily Claude Code version check — the only thing here that touches the network. |
 | `NO_COLOR` | Suppresses all ANSI. |
 
 ## The subagent statusline
@@ -223,6 +226,31 @@ the first line, because `stat` takes `-f` on BSD and `-c` on GNU. A cache hit ne
 refreshes that timestamp, so a busy session can't keep an entry alive indefinitely.
 Corrupt, unreadable and unwritable caches all degrade to a live gather rather than
 to a broken panel.
+
+## Update check
+
+`↑2.1.240` appears when the Claude Code you're running is behind the latest
+published release. **This is the one cell that makes a network request** — nothing
+else in this statusline leaves the machine — so it's worth being explicit about
+what it does:
+
+- It compares the `version` Claude Code passes on stdin against
+  `registry.npmjs.org/@anthropic-ai/claude-code/latest`.
+- It runs **at most once a day**, behind the same session-keyed cache as git
+  state, and retries an hour after a failed check rather than staying silent for
+  a full day over one dropped request.
+- It **never blocks the render.** The fetch is detached with a 5-second hard
+  timeout; this render draws whatever the cache already holds, which on a cold
+  start is nothing. You'll see the chip on a later refresh, not this one.
+- **Silence is the normal state.** The chip exists only when you're behind.
+
+Set `CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1` to turn it off entirely; no request is
+made and no cache entry is written.
+
+Versions compare component-wise rather than lexically — `2.1.9` is older than
+`2.1.10`, which a string comparison gets backwards — and a non-numeric component
+(a `-beta` suffix) reads as `0`, so a prerelease sorts as older than its release
+rather than unpredictably.
 
 ## Notes
 
