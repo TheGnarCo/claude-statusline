@@ -33,6 +33,13 @@
 # ── Primitives ────────────────────────────────────────────────────────────
 # Marks and frame are Unicode block/box-drawing characters: single-width, so the
 # column arithmetic stays deterministic, but not ASCII. See the header.
+# This script's own version. Plugin users receive a copy with no git metadata,
+# so it cannot be derived at runtime — it is a constant, bumped at release time.
+# `test/run.sh` asserts it matches the newest heading in CHANGELOG.md, so a
+# release that forgets to bump it fails CI rather than shipping a statusline
+# that reports itself as current forever.
+STATUSLINE_VERSION='2.0.0'
+
 ESC=$(printf '\033')
 BEL=$(printf '\007')
 # One texture for every meter: a mid shade over a light track. The meters are
@@ -702,46 +709,34 @@ case "$telem_state" in
   untagged) tag_p="untagged" tag_d="${TELEM_OFF}$(osc8 "$TELEM_URL" 'untagged')${RST}" ;;
 esac
 
-# ── Title: the repo, as the panel's name, set into the top rule ─────────────
-# Owner muted, name in the frame's own orange and bold. Same hue as the rule it
-# sits in, which works because the rule is a thin run of ─ and the name is bold
-# text: weight and shape separate them where colour no longer does.
-if [ -n "$repo_slug" ]; then
-  title_txt=$repo_slug
-elif [ -n "$repo_name" ]; then
-  title_txt=$repo_name
-else
-  title_txt=$dir_disp
-fi
-_title_budget=$((inner - 6 - ${#tag_p}))
-[ "$_title_budget" -lt 8 ] && _title_budget=8
-title_txt=$(trunc_mid "$title_txt" "$_title_budget")
-if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
-  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${TELEM_ON}${repo_slug##*/}${RST}"
-else
-  title_disp="${BOLD}${TELEM_ON}${title_txt}${RST}"
-fi
-[ -n "$repo_https" ] && title_disp=$(osc8 "$repo_https" "$title_disp")
-
-# ── Update check ────────────────────────────────────────────────────────────
-# The one cell that cannot be computed from stdin: whether a newer Claude Code
-# exists. Three rules keep it honest on a row that redraws several times a second:
+# ── Update checks ───────────────────────────────────────────────────────────
+# Two things can be out of date, and neither can be computed from stdin: Claude
+# Code itself, and this statusline. Both go through one code path.
 #
-#   1. It NEVER blocks the render. The check runs detached; this render draws
+# The statusline one matters more than it looks. Plugin users never run from a
+# checkout — `/gnar-statusline` COPIES the released scripts into ~/.claude/ — so
+# a published release reaches nobody until they re-run that command, and until
+# now nothing told them a release existed. That is the same class of silent
+# staleness that let the agent panel sit broken for weeks.
+#
+# Three rules keep this honest on a row that redraws several times a second:
+#
+#   1. It NEVER blocks the render. Checks run detached; this render draws
 #      whatever the cache already holds, which on a cold start is nothing.
-#   2. It runs at most once a day, behind the same session-keyed cache as git.
-#   3. Silence is the normal state. The chip exists only when you are behind.
+#   2. At most once a day each, behind the same session-keyed cache as git.
+#   3. Silence is the normal state. A chip exists only when you are behind.
 #
-# It makes a network request, which nothing else here does — hence the opt-out,
-# and hence saying so plainly in the README rather than burying it.
+# These are the only network requests this script makes — hence the opt-out, and
+# hence saying so plainly in the README rather than burying it.
 UPDATE_TTL=86400  # a day between checks
 UPDATE_RETRY=3600 # ...but retry an hour after a failed one
-UPDATE_URL='https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
+CC_UPDATE_URL='https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
+SELF_UPDATE_URL='https://api.github.com/repos/TheGnarCo/claude-statusline/releases/latest'
+RELEASES_URL='https://github.com/TheGnarCo/claude-statusline/releases/latest'
 
 update_enabled=1
 case "${CLAUDE_STATUSLINE_NO_UPDATE_CHECK:-}" in '' | 0) ;; *) update_enabled=0 ;; esac
 [ "$CACHE_OK" -eq 1 ] || update_enabled=0
-[ -n "$cc_version" ] || update_enabled=0
 command -v curl > /dev/null 2>&1 || update_enabled=0
 
 # ver_gt <a> <b> — 0 when a is strictly newer than b. Dotted integers only, and
@@ -761,36 +756,90 @@ ver_gt() {
   return 1
 }
 
+# spawn_check <cache-key> <url> <jq-filter>
 # Detached, output discarded, hard timeout. A statusline must never leave a
 # process hanging around waiting on a socket.
-spawn_update_check() {
-  cache_write version "" # claim the slot first, so concurrent renders don't all fetch
+spawn_check() {
+  local key=$1 url=$2 filter=$3
+  cache_write "$key" "" # claim the slot first, so concurrent renders don't all fetch
   (
-    _latest=$(curl -fsS --max-time 5 "$UPDATE_URL" 2> /dev/null |
-      jq -r '.version // empty' 2> /dev/null)
+    _latest=$(curl -fsS --max-time 5 "$url" 2> /dev/null | jq -r "$filter" 2> /dev/null)
+    _latest=${_latest#v} # GitHub tags are vX.Y.Z; npm versions are not
     case "$_latest" in
       '' | *[!0-9.]*) exit 0 ;; # unparseable: leave the empty claim to expire
     esac
-    cache_write version "$_latest"
+    cache_write "$key" "$_latest"
   ) > /dev/null 2>&1 &
 }
 
-update_chip=""
-if [ "$update_enabled" -eq 1 ]; then
-  if _cached=$(cache_read version "$UPDATE_TTL"); then
-    _latest=${_cached%%
+# check_update <cache-key> <url> <jq-filter> <current-version>
+# Prints the newer version when one exists, nothing otherwise.
+check_update() {
+  local key=$1 url=$2 filter=$3 current=$4 cached latest
+  [ "$update_enabled" -eq 1 ] || return 0
+  [ -n "$current" ] || return 0
+  if cached=$(cache_read "$key" "$UPDATE_TTL"); then
+    latest=${cached%%
 *}
-    if [ -n "$_latest" ]; then
-      ver_gt "$_latest" "$cc_version" && update_chip="↑${_latest}"
-    elif ! cache_read version "$UPDATE_RETRY" > /dev/null; then
-      # An empty entry is a claim whose fetch failed. Retry on the hour rather
-      # than staying silent for a full day over one dropped request.
-      spawn_update_check
+    latest=${latest#v} # belt and braces: GitHub tags are vX.Y.Z
+    if [ -n "$latest" ]; then
+      ver_gt "$latest" "$current" && printf '%s' "$latest"
+      return 0
     fi
-  else
-    spawn_update_check
+    # An empty entry is a claim whose fetch failed. Retry on the hour rather than
+    # staying silent for a full day over one dropped request.
+    cache_read "$key" "$UPDATE_RETRY" > /dev/null && return 0
   fi
+  spawn_check "$key" "$url" "$filter"
+}
+
+update_chip=""
+_cc_latest=$(check_update version "$CC_UPDATE_URL" '.version // empty' "$cc_version")
+[ -n "$_cc_latest" ] && update_chip="↑${_cc_latest}"
+
+self_chip=""
+_self_latest=$(check_update release "$SELF_UPDATE_URL" '.tag_name // empty' "$STATUSLINE_VERSION")
+[ -n "$_self_latest" ] && self_chip="update v${_self_latest}"
+
+# ── Title: the repo, as the panel's name, set into the top rule ─────────────
+# Owner muted, name in the frame's own orange and bold. Same hue as the rule it
+# sits in, which works because the rule is a thin run of ─ and the name is bold
+# text: weight and shape separate them where colour no longer does.
+if [ -n "$repo_slug" ]; then
+  title_txt=$repo_slug
+elif [ -n "$repo_name" ]; then
+  title_txt=$repo_name
+else
+  title_txt=$dir_disp
 fi
+# The top rule's right side: an update chip when one is due, then coverage. The
+# chip sheds before the repo name is squeezed — a name truncated to make room for
+# "there is a newer version" is a bad trade, since the name is what identifies
+# the pane and the chip will still be there tomorrow.
+TITLE_MIN=18
+rule_right_d="" rule_right_p=""
+if [ -n "$self_chip" ] && [ "$((inner - 6 - ${#tag_p} - ${#self_chip} - 2))" -ge "$TITLE_MIN" ]; then
+  rule_right_d="${BOLD}${YELLOW}$(osc8 "$RELEASES_URL" "$self_chip")${RST}"
+  rule_right_p=$self_chip
+fi
+if [ -n "$tag_p" ]; then
+  if [ -n "$rule_right_p" ]; then
+    rule_right_d="${rule_right_d}  "
+    rule_right_p="${rule_right_p}  "
+  fi
+  rule_right_d="${rule_right_d}${tag_d}"
+  rule_right_p="${rule_right_p}${tag_p}"
+fi
+
+_title_budget=$((inner - 6 - ${#rule_right_p}))
+[ "$_title_budget" -lt 8 ] && _title_budget=8
+title_txt=$(trunc_mid "$title_txt" "$_title_budget")
+if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
+  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${TELEM_ON}${repo_slug##*/}${RST}"
+else
+  title_disp="${BOLD}${TELEM_ON}${title_txt}${RST}"
+fi
+[ -n "$repo_https" ] && title_disp=$(osc8 "$repo_https" "$title_disp")
 
 # ── Row 1 ───────────────────────────────────────────────────────────────────
 # Built at a shed level; the caller walks levels up until the row fits. Sets
@@ -1163,7 +1212,7 @@ content() {
     "$FRAME" "$FR_V" "$RST"
 }
 
-rule "$FR_TL" "$FR_TR" "$title_disp" "${#title_txt}" "$tag_d" "${#tag_p}"
+rule "$FR_TL" "$FR_TR" "$title_disp" "${#title_txt}" "$rule_right_d" "${#rule_right_p}"
 content "$R1_D" "${#R1_P}"
 
 rule "$FR_ML" "$FR_MR" "${BOLD}${TELEM_ON}USAGE${RST}" 5

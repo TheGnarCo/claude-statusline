@@ -190,6 +190,12 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   or non-GitHub-SSH remote) there's no owner and the title degrades to the bare name rather
   than labelling something else as one. Both sources and the deep-path shapes are covered in
   `run.sh` — change one and check the other.
+- **Cutting a release means bumping `STATUSLINE_VERSION` in `statusline.sh`.** It
+  feeds the self-update chip, and plugin users receive a *copy* with no git
+  metadata, so it cannot be derived at runtime. `test/run.sh` asserts it equals the
+  newest `## vX.Y.Z` heading in `CHANGELOG.md` — so forgetting it fails CI instead
+  of shipping a statusline that tells every user it is current forever. Bump the
+  constant and the CHANGELOG in the same commit as the tag.
 - **A broken agent panel is INVISIBLE.** Claude Code validates each line of
   `subagent-statusline.sh`'s stdout against `{id: string, content: string}`, logs
   `subagentStatusLine emitted invalid schema` — only under `claude --debug` — and

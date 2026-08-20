@@ -180,7 +180,7 @@ timer keeps them live. Omit it to update only on events.
 | `CLAUDE_STATUSLINE_HIDE_TELEM` | `1` hides the coverage tag (for anyone not sending OTEL telemetry, where it has nothing to say). Unset and `0` both mean show. |
 | `CLAUDE_STATUSLINE_GIT_CACHE_TTL` | Seconds a gathered git state stays warm. Defaults to 3. `0` re-gathers every render. |
 | `CLAUDE_STATUSLINE_NO_CACHE` | `1` disables caching entirely. |
-| `CLAUDE_STATUSLINE_NO_UPDATE_CHECK` | `1` disables the daily Claude Code version check — the only thing here that touches the network. |
+| `CLAUDE_STATUSLINE_NO_UPDATE_CHECK` | `1` disables both daily version checks — the only things here that touch the network. |
 | `NO_COLOR` | Suppresses all ANSI. |
 
 ## The subagent statusline
@@ -237,15 +237,25 @@ refreshes that timestamp, so a busy session can't keep an entry alive indefinite
 Corrupt, unreadable and unwritable caches all degrade to a live gather rather than
 to a broken panel.
 
-## Update check
+## Update checks
 
-`↑2.1.240` appears when the Claude Code you're running is behind the latest
-published release. **This is the one cell that makes a network request** — nothing
-else in this statusline leaves the machine — so it's worth being explicit about
-what it does:
+Two things can be out of date, and each gets a chip:
 
-- It compares the `version` Claude Code passes on stdin against
-  `registry.npmjs.org/@anthropic-ai/claude-code/latest`.
+- **`update v2.1.0`** in the top rule, beside coverage — a newer
+  **claude-statusline** release exists. Click it for the releases page.
+- **`↑2.1.240`** on row 1 — the **Claude Code** you're running is behind.
+
+The first matters more than it looks. `/gnar-statusline` *copies* the released
+scripts into `~/.claude/`, so a published release reaches plugin users only when
+they re-run that command — and nothing else tells them a release happened. That's
+the same silent staleness that let the subagent statusline sit broken for weeks.
+
+**These are the only cells that make a network request** — nothing else in this
+statusline leaves the machine — so it's worth being explicit about what they do:
+
+- They compare the `version` Claude Code passes on stdin against
+  `registry.npmjs.org/@anthropic-ai/claude-code/latest`, and this script's own
+  `STATUSLINE_VERSION` against this repo's `releases/latest`.
 - It runs **at most once a day**, behind the same session-keyed cache as git
   state, and retries an hour after a failed check rather than staying silent for
   a full day over one dropped request.
@@ -254,8 +264,17 @@ what it does:
   start is nothing. You'll see the chip on a later refresh, not this one.
 - **Silence is the normal state.** The chip exists only when you're behind.
 
-Set `CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1` to turn it off entirely; no request is
-made and no cache entry is written.
+Set `CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1` to turn both off entirely; no request
+is made and no cache entry is written.
+
+The self-update chip **sheds before the repo name is squeezed** — a name truncated
+to make room for "there is a newer version" is a bad trade, since the name is what
+identifies the pane and the chip will still be there tomorrow.
+
+`STATUSLINE_VERSION` is a constant in `statusline.sh`, because plugin users get a
+copy with no git metadata and it cannot be derived at runtime. The suite asserts it
+matches the newest heading in `CHANGELOG.md`, so a release that forgets to bump it
+fails CI rather than shipping a statusline that reports itself as current forever.
 
 Versions compare component-wise rather than lexically — `2.1.9` is older than
 `2.1.10`, which a string comparison gets backwards — and a non-numeric component
