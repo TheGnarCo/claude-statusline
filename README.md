@@ -7,12 +7,15 @@ subagent statusline, each a single bash script. No Rust, no extra binaries — j
 ## What it shows
 
 ```
-╭─ TheGnarCo/claude-statusline ──────────────────────────────────────────────────────────────────────── tagged ╮
-│ @main ^2 !2 ?1 +120/-45      │       Opus 4.8 Hi Explanatory      │                       $1.23  $7.38/h │
+╭─ TheGnarCo/claude-statusline ────────────────────────────────────────────────────────────────────── untagged ╮
+│ @work ^3 v2 !1 +1 ?1 *1 +120/-45         │         Opus 4.8 Hi Explanatory         │         $1.23  $7.38/h  │
 ├─ USAGE ──────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ CTX ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░ 420k/1M │ 5h ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░ 73% 5h0m │ 7d ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░ 2d4h │
+│ CTX ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░ 420k/1M │ 5h ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░ 73% 5h0m │ 7d ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░ 7d0h │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+*(That block is `test/golden/panel-full.txt` verbatim — the suite pins it, so it
+cannot drift from what the script actually prints.)*
 
 A five-line panel with two rows of content. **The top rule carries what is true of
 the whole panel** — the repo, and whether its usage is attributed in telemetry.
@@ -52,11 +55,20 @@ blank. Each group drops out entirely when it has nothing to say.
   (magenta), which appears only when a **non-default** style is set.
 - **spend** — total cost and per-hour burn (green).
 
-When the pane narrows, the row sheds cheapest-loss-first: the derived burn rate,
-then the output style, then this session's churn, then the worktree suffix, then
-the spend, then the config group. Only after all of that does the branch name
-itself middle-ellipsize — and then by **exactly the overflow**, never to a fixed
-stub, so a pane that can hold most of a branch shows most of it.
+When the pane narrows, the row sheds cheapest-loss-first, one rung at a time:
+
+| Rung | What goes |
+| --- | --- |
+| 1 | the derived per-hour burn (recomputable from the total) |
+| 2 | the output style |
+| 3 | this session's churn **and** a worktree suffix that isn't already in the branch |
+| 4 | the working-tree sigils |
+| 5 | the spend |
+| 6 | the config group |
+
+Only after all six does the branch name itself middle-ellipsize — and then by
+**exactly the overflow**, never to a fixed stub, so a pane that can hold most of
+a branch shows most of it. It will not shrink below 6 characters.
 
 ### Row 2 — what it is spending
 

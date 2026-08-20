@@ -14,8 +14,11 @@ bash (3.2) so it's a portable drop-in.
   meter row (CTX / 5h / 7d), and a bottom rule. Frame and separators are burnt Gnar
   orange. **Unicode block elements and box drawing, with no ASCII fallback** — see
   the gotcha below, because this repo used to sell pure ASCII as a feature.
-- **`subagent-statusline.sh`** — the agent-panel status line. Reads subagent JSON on
-  stdin and emits `{"tasks":[...]}` in a single `jq` pass.
+- **`subagent-statusline.sh`** — the agent-panel status line. Reads the panel JSON
+  on stdin and writes **one JSON line per row**, `{"id": ..., "content": ...}`, in a
+  single `jq` pass. `content` replaces the whole row body and may carry ANSI. It
+  emitted a `{"tasks":[...]}` envelope until v2.0.0, which Claude Code silently
+  rejected — see the gotcha below, because that failure mode is invisible.
 - **`install.sh`** — symlinks both scripts into `~/.local/bin` as `claude-statusline`
   and `claude-subagent-statusline`.
 
@@ -87,6 +90,7 @@ Practical consequences:
 ```sh
 bash test/run.sh              # snapshot suite: render vs. test/golden/, + color/exit/width asserts
 bash test/run.sh --update     # regenerate golden snapshots after an INTENTIONAL output change
+bash test/subagent.sh         # agent-panel contract: {id, content} per line, degradation, colour
 shellcheck -x *.sh test/run.sh
 shfmt -d -i 2 -ci -sr *.sh test/run.sh   # -d = diff (dry-run); -w to apply
 ```
@@ -94,9 +98,10 @@ shfmt -d -i 2 -ci -sr *.sh test/run.sh   # -d = diff (dry-run); -w to apply
 `test/run.sh` renders `statusline.sh` against fixture payloads in a throwaway non-git
 (and one git) temp dir and diffs the ANSI-stripped output against `test/golden/*.txt`. It
 also asserts color-mode behavior (ANSI on by default, none under `NO_COLOR`, indexed ramp
-off truecolor), that the script always exits 0, and that no rendered line exceeds
-`COLUMNS`. CI (`.github/workflows/ci.yml`) runs the same shellcheck + shfmt + `test/run.sh`
-on every push/PR via mise.
+off truecolor), that the script always exits 0, and that every rendered line is
+**exactly** `COLUMNS - CHROME_MARGIN` wide — not merely under it. `test/subagent.sh`
+covers the agent panel separately. CI (`.github/workflows/ci.yml`) runs the same shellcheck + shfmt + `test/run.sh`
++ `test/subagent.sh` on every push/PR via mise.
 
 Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical format here.
 
@@ -151,11 +156,15 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   cannot separate 73% from 78%. Don't "restore" percentages without moving that
   constant — the omission is the design.
 - **Shed cheapest-loss-first, and never key a shed on punctuation.** The row-1 ladder
-  drops the derived burn, then the style, then churn, then the worktree suffix, then
-  spend, then the config group — and only then trims the branch, by exactly the
-  overflow. A previous implementation detected the burn rate by matching a literal
-  `" ("`; dropping the parens made it silently stop matching and shed the whole cost
-  member, taking the total with it. **Detect the burn by its unit (`/h`).**
+  has **seven** rungs, and `build_row1` gates them by `lvl`: 1 the derived burn, 2 the
+  output style, 3 churn *and* a worktree suffix not already inside the branch (one
+  rung, not two), 4 the working-tree sigils, 5 spend, 6 the config group — and only
+  then, at `lvl >= 5`, the branch is trimmed by **exactly the overflow**, floored at
+  `_BRANCH_FLOOR` (6). Read the gates rather than this list if they disagree; this
+  list has been wrong before. A previous implementation detected the burn rate by
+  matching a literal `" ("`; dropping the parens made it silently stop matching and
+  shed the whole cost member, taking the total with it. **Detect the burn by its
+  unit (`/h`).**
 - **The telem-tag chip duplicates the toolkit hook's detection on purpose.** It answers
   the same question as `toolkit/scripts/hooks/project-telem-tag-check.sh` in agent-skills
   (does this repo carry a `project.name=` OTEL attribute — live env, then
@@ -181,6 +190,17 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   or non-GitHub-SSH remote) there's no owner and the title degrades to the bare name rather
   than labelling something else as one. Both sources and the deep-path shapes are covered in
   `run.sh` — change one and check the other.
+- **A broken agent panel is INVISIBLE.** Claude Code validates each line of
+  `subagent-statusline.sh`'s stdout against `{id: string, content: string}`, logs
+  `subagentStatusLine emitted invalid schema` — only under `claude --debug` — and
+  falls back to the default row. The script was a silent no-op from whenever the
+  contract changed until v2.0.0 and nothing surfaced it. Two consequences: run
+  `test/subagent.sh` after touching it, and remember that an **empty `content`
+  hides a row**, so every failure path must emit *nothing* rather than an empty
+  string.
+- **The README's example panel is `test/golden/panel-full.txt` verbatim.** It was
+  hand-drawn once and drifted four columns from real output. Regenerate with
+  `test/run.sh --update` and paste, or leave it alone.
 - **Bash 3.2 only.** No associative arrays, no `${var^^}`, no `mapfile`. The scripts use
   parallel indexed arrays and `tr` for case-folding on purpose — keep new code 3.2-safe so
   it runs on macOS system bash. C-style `for ((...))` is fine; `rep()` builds repeated

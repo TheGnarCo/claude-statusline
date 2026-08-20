@@ -397,6 +397,10 @@ else
   cd "$COUNTERS" || exit 2
   P_CT='{"workspace":{"current_dir":"/work/proj/x"},'"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_lines_added":120,"total_lines_removed":45}}'
   snapshot panel-counters 140 "$P_CT"
+  # Everything at once. THE README'S EXAMPLE PANEL IS THIS FILE, verbatim — so a
+  # docs drift becomes a test failure instead of something nobody notices.
+  P_FULL='{"workspace":{"current_dir":"/work/proj/claude-statusline","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"},"effort":{"level":"high"},"output_style":{"name":"Explanatory"},"cost":{"total_cost_usd":1.23,"total_duration_ms":600000,"total_lines_added":120,"total_lines_removed":45},'"$RL"'}'
+  snapshot panel-full 120 "$P_FULL"
   ct=$(run_sl 140 "$P_CT" | strip_ansi | sed -n 2p)
   miss=""
   for sig in '^3' 'v2' '!1' '+1' '?1' '*1'; do

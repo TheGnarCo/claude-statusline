@@ -6,30 +6,33 @@
 #
 #   "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
 #
-# Reads the Claude Code statusline JSON on stdin and emits 2-4 colored lines:
-#   Line 1: owner/repo [@branch(/wt) counters +N/-M]
-#           [name model ctx eff style $cost][telem tag]
-#           — identity + config folded onto one row of colored [] groups, ONE
-#           GROUP PER CONCEPT: git state, then this session, then this config,
-#           then whether this repo's usage is attributed in telemetry.
-#           Groups pack left-to-right and wrap to a continuation line only when
-#           they won't fit the pane. No PR chip — Claude Code surfaces the PR.
-#           Members are space-separated inside their []; git counters are colored
-#           ASCII sigils:
-#           x conflict  ^ ahead  v behind  ! modified  + staged  ? untracked  *stash
-#   Line 2: CTX <bar w/ amber autocompact cell> N% Nk/Nk cache N% N%->AC [200k+]
-#   Line 3: 5h  <bar> N% Xh Ym left [delta]   (+ inline "7d N%" when 7d hidden)
-#   Line 4: 7d  <bar> N% Xd Yh left [delta]   (shown only when 7d is binding)
+# Reads the Claude Code statusline JSON on stdin and emits a five-line panel:
 #
-# Pure ASCII; no Nerd Font required. Colors honor NO_COLOR and degrade on
-# non-truecolor terminals. Everything degrades gracefully: missing fields just
-# drop their segment.
+#   ╭─ owner/repo ──────────────────────────────────── tagged ╮
+#   │ @branch sigils churn │ model effort │ $cost $burn       │
+#   ├─ USAGE ─────────────────────────────────────────────────┤
+#   │ CTX ▒▒░░ 420k/1M │ 5h ▒▒▒░ 5h0m │ 7d ▒▒░░ 2d4h          │
+#   ╰─────────────────────────────────────────────────────────╯
+#
+# The top rule carries what is true of the whole panel — the repo, and whether
+# its usage is attributed in telemetry. Row 1 is what this session IS; row 2 is
+# what it is spending. Groups ride on vertical rules rather than brackets, and
+# both the frame and those rules take the burnt Gnar orange.
+#
+# Needs Unicode block elements and box drawing. There is NO ASCII fallback: this
+# replaced a pure-ASCII output that every version through v1.2.0 sold as a
+# feature. The marks are CP437-heritage and single-width, so the column
+# arithmetic stays deterministic, but a font substituting a double-width glyph
+# will misalign the frame.
+#
+# Colors honor NO_COLOR and degrade to a 256-color ramp on terminals without
+# truecolor. Everything degrades gracefully: missing fields drop their cell.
 #
 # Bash 3.2 compatible (macOS system bash).
 
 # ── Primitives ────────────────────────────────────────────────────────────
-# Bars + sigils are pure ASCII: width-deterministic on every terminal (incl.
-# cmux's re-emulated grid) and no Nerd Font dependency.
+# Marks and frame are Unicode block/box-drawing characters: single-width, so the
+# column arithmetic stays deterministic, but not ASCII. See the header.
 ESC=$(printf '\033')
 BEL=$(printf '\007')
 # One texture for every meter: a mid shade over a light track. The meters are
@@ -54,8 +57,8 @@ SIG_BRANCH='@' # branch (evokes git @/HEAD)
 
 # ── Color capability ────────────────────────────────────────────────────────
 # Honor NO_COLOR (https://no-color.org) and dumb terminals; detect truecolor so
-# the 24-bit gradient can degrade to a 256-color ramp elsewhere. The ASCII pip
-# shapes already carry meaning without color, so mono output stays legible.
+# the meter hues can degrade to a 256-color ramp. Under NO_COLOR the labels in
+# front of each meter carry the identity that hue otherwise would.
 USE_COLOR=1
 [ -n "${NO_COLOR:-}" ] && USE_COLOR=0
 [ "${TERM:-}" = "dumb" ] && USE_COLOR=0
@@ -160,9 +163,9 @@ trunc_mid() {
 osc8() { printf '%s]8;;%s%s%s%s%s%s]8;;%s' "$ESC" "$1" "$BEL" "$UL" "$2" "$UL_OFF" "$ESC" "$BEL"; }
 
 # ── cmux compatibility shim ─────────────────────────────────────────────────
-# The bars and sigils above are already pure ASCII, so the only thing that still
-# garbles under cmux (the libghostty agent multiplexer, which re-emulates the
-# grid and freezes frames into per-tab scrollback) is OSC 8 hyperlinks: a
+# The block and box-drawing marks above are single-width, so the only thing that
+# still garbles under cmux (the libghostty agent multiplexer, which re-emulates
+# the grid and freezes frames into per-tab scrollback) is OSC 8 hyperlinks: a
 # variable-length zero-width payload cmux miscounts, wrapping an unbudgeted row
 # and desyncing the scroll region. Detect cmux via its launch env (CMUX_SURFACE_ID
 # = the render surface, always set; CMUX_BUNDLE_ID as backstop) and emit link
@@ -239,7 +242,6 @@ fields=$(printf '%s' "$input" | jq -r '
   "used_pct=\(.context_window.used_percentage // "" | tostring)",
   "ctx_input_tokens=\(.context_window.total_input_tokens // 0 | tostring)",
   "ctx_window_size=\(.context_window.context_window_size // 0 | tostring)",
-  "cache_read_tokens=\(.context_window.current_usage.cache_read_input_tokens // 0 | tostring)",
   "worktree_name=\(.worktree.name // "")",
   "project_dir=\(.workspace.project_dir // "")",
   "cwd=\(.workspace.current_dir // "")",
@@ -260,7 +262,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "cols=\((.columns // .terminal.columns) // "" | tostring)"
 ' 2> /dev/null)
 
-used_pct="" ctx_input_tokens=0 ctx_window_size=0 cache_read_tokens=0
+used_pct="" ctx_input_tokens=0 ctx_window_size=0
 worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
@@ -276,7 +278,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     used_pct) used_pct=$_v ;;
     ctx_input_tokens) ctx_input_tokens=$_v ;;
     ctx_window_size) ctx_window_size=$_v ;;
-    cache_read_tokens) cache_read_tokens=$_v ;;
     worktree_name) worktree_name_input=$_v ;;
     project_dir) project_dir=$_v ;;
     cwd) cwd_input=$_v ;;
@@ -313,7 +314,6 @@ lines_added=$(int_prefix "$lines_added")
 lines_removed=$(int_prefix "$lines_removed")
 ctx_input_tokens=$(int_prefix "$ctx_input_tokens")
 ctx_window_size=$(int_prefix "$ctx_window_size")
-cache_read_tokens=$(int_prefix "$cache_read_tokens")
 
 # Terminal width: as of Claude Code v2.1.153 it arrives via the COLUMNS env var
 # (statusline stdout is captured, so `tput cols` can't see the tty). Prefer a
