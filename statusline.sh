@@ -38,7 +38,7 @@
 # `test/run.sh` asserts it matches the newest heading in CHANGELOG.md, so a
 # release that forgets to bump it fails CI rather than shipping a statusline
 # that reports itself as current forever.
-STATUSLINE_VERSION='2.0.0'
+STATUSLINE_VERSION='2.0.1'
 
 ESC=$(printf '\033')
 BEL=$(printf '\007')
@@ -253,7 +253,6 @@ fields=$(printf '%s' "$input" | jq -r '
   "cc_version=\(.version // "")",
   "fast_mode=\(if .fast_mode == true then "1" else "" end)",
   "thinking_off=\(if .thinking.enabled == false then "1" else "" end)",
-  "api_duration_ms=\(.cost.total_api_duration_ms // 0 | tostring)",
   "worktree_name=\(.worktree.name // "")",
   "project_dir=\(.workspace.project_dir // "")",
   "cwd=\(.workspace.current_dir // "")",
@@ -274,7 +273,7 @@ fields=$(printf '%s' "$input" | jq -r '
   "cols=\((.columns // .terminal.columns) // "" | tostring)"
 ' 2> /dev/null)
 
-session_id="" cc_version="" fast_mode="" thinking_off="" api_duration_ms=0
+session_id="" cc_version="" fast_mode="" thinking_off=""
 worktree_name_input="" project_dir="" cwd_input=""
 repo_host="" repo_owner="" repo_name_input=""
 model_name="" effort_level="" output_style="" cost_usd="" duration_ms=0
@@ -294,7 +293,6 @@ while IFS= read -r _kv || [ -n "$_kv" ]; do
     cc_version) cc_version=$_v ;;
     fast_mode) fast_mode=$_v ;;
     thinking_off) thinking_off=$_v ;;
-    api_duration_ms) api_duration_ms=$_v ;;
     worktree_name) worktree_name_input=$_v ;;
     project_dir) project_dir=$_v ;;
     cwd) cwd_input=$_v ;;
@@ -327,7 +325,6 @@ esac
 
 # Normalize numeric-ish fields.
 duration_ms=$(int_prefix "$duration_ms")
-api_duration_ms=$(int_prefix "$api_duration_ms")
 lines_added=$(int_prefix "$lines_added")
 lines_removed=$(int_prefix "$lines_removed")
 ctx_input_tokens=$(int_prefix "$ctx_input_tokens")
@@ -954,10 +951,6 @@ build_row1() {
       d="${d}  ${GREEN}${money_burn}${RST}"
       p="${p}  ${money_burn}"
     fi
-    if [ "$lvl" -lt 1 ] && [ -n "$api_pct" ]; then
-      d="${d}  ${MUTED}api ${api_pct}%${RST}"
-      p="${p}  api ${api_pct}%"
-    fi
     G_D[n]=$d
     G_P[n]=$p
     n=$((n + 1))
@@ -1022,16 +1015,6 @@ esac
 # burn by its UNIT, never by punctuation: a previous version keyed the shed on a
 # literal " (" and silently stopped matching when the parens were dropped, which
 # sent gflush after the whole cost member and lost the total too.
-# Share of the session spent blocked on the API, from two duration fields that
-# have always been on stdin. Gated on a minute of session so a fresh session does
-# not report a wild ratio off a few hundred milliseconds, and clamped because the
-# two clocks are measured independently and can disagree at the margin.
-api_pct=""
-if [ "$duration_ms" -ge 60000 ] && [ "$api_duration_ms" -gt 0 ]; then
-  api_pct=$((api_duration_ms * 100 / duration_ms))
-  [ "$api_pct" -gt 100 ] && api_pct=100
-fi
-
 money_total="" money_burn=""
 if [ -n "$cost_usd" ]; then
   money_total=$(awk -v c="$cost_usd" 'BEGIN{ if (c ~ /^[0-9]+(\.[0-9]+)?$/) printf "$%.2f", c }')

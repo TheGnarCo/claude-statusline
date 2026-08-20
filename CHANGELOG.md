@@ -5,6 +5,28 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v2.0.1
+
+Drops the `api N%` cell from row 1.
+
+It reported the share of the session spent waiting on API responses —
+`total_api_duration_ms` over `total_duration_ms`, both of which Claude Code has always
+sent. Accurate, and nobody wanted it.
+
+### Why
+
+It answered a question that has no action attached. A session is 51% API wait; now what?
+The number is session-cumulative, so it stops moving once a session is a few hours old,
+and it says as much about how long you spent typing as about anything the statusline
+could help with. Every other cell on this row is something you might act on — a
+conflict, a dirty tree, a quota running out, an update to install. This one was trivia
+that happened to be computable.
+
+It was built as a nice-to-have and shed before the burn rate, which is the right
+priority for a cell that has to justify its columns. On reflection it could not.
+
+`cost.total_api_duration_ms` is still on stdin. Nothing here reads it any more.
+
 ## v2.0.0
 
 **Breaking.** The statusline is now a framed panel, and it needs a font with Unicode block

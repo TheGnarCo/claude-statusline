@@ -60,12 +60,7 @@ blank. Each group drops out entirely when it has nothing to say.
   off and doesn't render as if it were.
 - **update** — `↑2.1.240` (yellow) when a newer Claude Code exists. Absent when
   you're current, which is almost always. See [Update check](#update-check).
-- **spend** — total cost and per-hour burn (green), plus **`api N%`**: the share
-  of this session spent blocked on the API, from the two duration fields Claude
-  Code reports. It needs a minute of session before it means anything, so a fresh
-  session shows nothing, and it's clamped at 100% because the two clocks are
-  measured independently and can disagree at the margin. It's a nice-to-have, so
-  it sheds with the burn rate and never outlives it.
+- **spend** — total cost and per-hour burn (green).
 
 When the pane narrows, the row sheds cheapest-loss-first, one rung at a time:
 
