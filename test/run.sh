@@ -206,6 +206,7 @@ assert "meters: no rate-limit data renders CTX without empty windows" "$c"
 # no boundary to mark, so the label carries the warning. Asserted on the escape
 # codes, because the point is entirely colour.
 esc=$(printf '\033')
+out_color=$(run_sl 120 "$P_NORMAL")
 lab_color() { run_sl 120 "$1" | sed -n 4p | sed 's/.*\('"$esc"'\[[0-9;]*m\)CTX.*/\1/'; }
 case "$(lab_color "$P_CTX_CALM")" in "${esc}[32m") c=0 ;; *) c=1 ;; esac
 assert "autocompact: CTX is green with room to spare" "$c"
@@ -214,8 +215,9 @@ assert "autocompact: CTX turns amber approaching the threshold" "$c"
 case "$(run_sl 120 "$P_CTX_OVER" | sed -n 4p)" in *"${esc}[1m${esc}[31mCTX"*) c=0 ;; *) c=1 ;; esac
 assert "autocompact: CTX goes bold red once past the threshold" "$c"
 # The override has to move the escalation, or it is only decorative.
-over=$(COLUMNS=120 HOME=/home/tester CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 \
-  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_CTX_CALM" | sed -n 4p)
+over=$(COLUMNS=120 HOME=/home/tester COLORTERM=truecolor TERM=xterm-256color NO_COLOR='' \
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 OTEL_RESOURCE_ATTRIBUTES='' \
+  bash "$SCRIPT" <<< "$P_CTX_CALM" | sed -n 4p)
 case "$over" in *"${esc}[33mCTX"* | *"${esc}[1m${esc}[31mCTX"*) c=0 ;; *) c=1 ;; esac
 assert "autocompact: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE moves the escalation" "$c"
 
@@ -238,7 +240,15 @@ assert "row 1: no interior blank run exceeds the capped gap" \
 gap_sparse=$(run_sl 160 "$P_CTX_CALM" | strip_ansi | sed -n 2p | interior)
 assert "row 1: a sparse row in a wide pane is capped, not stretched" \
   "$([ "$gap_sparse" -le 18 ] && echo 0 || echo 1)"
+
+# Groups really are divided by a rule, and the rule really is Gnar orange — the
+# separator and the frame share that colour, so asserting the glyph alone would
+# pass on a plain pipe.
+row1_inner=$(printf '%s' "$l2" | sed 's/^..//; s/..$//')
+case "$row1_inner" in *'│'*) c=0 ;; *) c=1 ;; esac
 assert "row 1: groups are divided by a vertical rule" "$c"
+case "$(printf '%s' "$out_color" | sed -n 2p)" in *"${esc}[38;2;181;110;58m│"*) c=0 ;; *) c=1 ;; esac
+assert "row 1: the dividing rule is burnt Gnar orange" "$c"
 
 # ── Shed order ───────────────────────────────────────────────────────────────
 # Cheapest loss first. The derived burn goes before the total it is derived from;
@@ -265,7 +275,6 @@ done
 assert "shed: effort outlives the output style" "$((1 - style_first))"
 
 # ── Colour behaviour ─────────────────────────────────────────────────────────
-out_color=$(run_sl 120 "$P_NORMAL")
 case "$out_color" in *"${esc}["*) c=0 ;; *) c=1 ;; esac
 assert "color: emits ANSI by default" "$c"
 
