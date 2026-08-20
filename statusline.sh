@@ -766,6 +766,10 @@ for _lvl in 0 1 2 3 4 5 6; do
     _cut=$((_bmax - (_w - inner)))
     [ "$_cut" -lt "$_BRANCH_FLOOR" ] && _cut=$_BRANCH_FLOOR
     build_row1 "$_lvl" "$_cut"
+    # Keep the trimmed build. Falling through to the next level would rebuild at
+    # full branch width and undo it, which is what made a long branch never
+    # ellipsize at all.
+    break
   fi
 done
 assemble_row1

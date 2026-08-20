@@ -9,10 +9,11 @@ no Rust, no build step, no extra binaries beyond `git` and `jq`. Targets macOS s
 bash (3.2) so it's a portable drop-in.
 
 - **`statusline.sh`** — the main statusline. Reads Claude Code's statusline JSON on
-  stdin and emits 2–4 colored lines (identity/config row, a context-window bar, and the
-  5h/7d rate-limit windows). Pure ASCII pips — per-row fill/track pairs (`~`/`.` CTX,
-  `#`/`-` 5h, `:`/`_` 7d) plus the shared `|` marker and `*`/`!` projection — so no Nerd
-  Font is required; colors honor `NO_COLOR` and degrade to a 256-color ramp off truecolor.
+  stdin and emits a **five-line framed panel**: a top rule carrying the repo and the
+  telemetry-coverage verdict, a text row (git / config / spend), a `USAGE` rule, a
+  meter row (CTX / 5h / 7d), and a bottom rule. Frame and separators are burnt Gnar
+  orange. **Unicode block elements and box drawing, with no ASCII fallback** — see
+  the gotcha below, because this repo used to sell pure ASCII as a feature.
 - **`subagent-statusline.sh`** — the agent-panel status line. Reads subagent JSON on
   stdin and emits `{"tasks":[...]}` in a single `jq` pass.
 - **`install.sh`** — symlinks both scripts into `~/.local/bin` as `claude-statusline`
@@ -112,36 +113,49 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   whether the session running the suite is itself tagged — this repo is, CI isn't, and
   that would flip all three git goldens). Don't introduce wall-clock, `$HOME`-relative, or
   ambient-env output without pinning it in `run.sh`.
-- **Each bar row is a tier: its own fill glyph, track glyph, and gradient family.**
-  `render_bar` takes a trailing `<class>` (`ctx` | `7d` | anything-else = 5h) that selects
-  all three; an unknown class falls through to the 5h pair so a caller that forgets it
-  degrades to the shipped look rather than rendering a bar with no fill. Two rules are
-  load-bearing and easy to break:
-  - **Fill must stay the denser half of its own pair** (`~` over `.`, `#` over `-`, `:` over
-    `_`). Swap one and the bar stops reading as a level. And both halves must differ per row,
-    because fill-only identity vanishes on a nearly empty bar — at 2% the clock pip lands on
-    the single filled cell and overwrites it — while track-only identity vanishes on a full
-    one.
-  - **A clock pip may not share its row's hue family.** Pips are ink on the terminal
-    background, so what makes one findable is background contrast plus perceptual distance
-    from the fill beside it. On the blue-ramped 7d row, both a blue pip and a near-white one
-    measure ΔE ≈ 6 against the fill (the ramp's peak and its tinted-white terminus) — which is
-    why `MARKER_7D` is pink at ΔE ≈ 73. `run.sh` guards this specific regression.
-  All three ramps share one grey origin and end in a white tinted toward their own hue, so a
-  nearly empty bar is grey on every row. That is deliberate, and it is why the glyph pair —
-  not hue — is what actually distinguishes the rows. **The shared origin has to hold in both
-  color depths**: the 256-color fallbacks all open on index 59, and `run.sh` asserts it,
-  because opening `warm` on 60 (`#5f5f87`) instead made an empty 5h bar blue-violet while the
-  others were grey — true in truecolor, false everywhere else, and invisible to the goldens.
-- **Don't assert a per-row color by diffing rendered rows.** Each bar row's escape set also
-  carries that row's own pip color, and the rows render at different fill depths, so per-row
-  sets differ even when two families are the *same* ramp — an assertion written that way reads
-  green while the feature is gone. Compare the ramp constants read out of the source (see
-  `ramp_indices` in `run.sh`), and check rendering separately.
-- **Autocompact marker defaults to 80%.** The amber threshold cell / `N%->AC` headroom /
-  `[AC]` chip assume autocompact fires at 80% of the context window. Override the marker
-  with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) if a session's real threshold differs, or
-  it will point at the wrong cell.
+- **Unicode is a hard dependency now, and that is a reversal.** The bars are `▒`
+  over `░` and the frame is box drawing. Both README and this file used to promise
+  "pure ASCII, no Nerd Font required"; that promise is gone, deliberately, and there
+  is **no `CLAUDE_STATUSLINE_ASCII` escape hatch** — it was considered and declined.
+  These are CP437-heritage single-width characters, so the column arithmetic stays
+  deterministic, but a font substituting a double-width glyph will misalign the
+  frame. If that ever bites, the fix is a fallback, not a layout change.
+- **Geometry is THE invariant: every line is exactly `COLUMNS - CHROME_MARGIN`.**
+  A frame whose rules and content rows disagree by one column is visibly broken, so
+  `test/run.sh` sweeps widths x payloads asserting it. Three things round
+  independently — the row-1 shed ladder, the space-between join, and the three-way
+  bar split — so an off-by-one shows only at particular widths. **Never spot-check
+  a width; run the sweep.**
+- **Visible width is not byte length.** The output is multibyte, so `${#var}` in bash
+  and `length` in awk both count bytes. The suite's `vislen` deletes UTF-8
+  continuation bytes and then counts, which is locale-independent — `wc -m` and awk's
+  `length` would each need a UTF-8 locale, and CI and macOS do not ship the same
+  ones. In the script itself every display string carries a **plain twin** whose
+  length is the measurement; never measure a string holding ANSI or OSC8.
+- **One texture, three hues — and the labels are what disambiguate.** All three
+  meters render the same shade over the same track; they are told apart by the label
+  in front of each and by colour. That reverses the old per-row glyph tiers on
+  purpose: those existed because bars stacked on separate rows had no adjacent label.
+  Side by side they do. Under `NO_COLOR` the hues vanish and the labels carry it
+  alone — which is why a meter must never render without its label.
+- **A meter is never dropped to save room.** A missing meter reads as "no data",
+  which is a different and wrong statement from "narrow pane". The bars shrink, the
+  tails shed, the meters stay.
+- **The CTX label is the autocompact indicator**, escalating green to amber to bold
+  red (default threshold 80%, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). With percentages
+  dropped there is no number left to escalate and a flat bar has no boundary to mark,
+  so the warning lives on the label. Asserted on escape codes, since the whole point
+  is colour.
+- **Percentages are deliberately absent except above `WINDOW_LOUD_PCT` (70).** The
+  bar is the proportion. A window shows its number only near the limit, where a bar
+  cannot separate 73% from 78%. Don't "restore" percentages without moving that
+  constant — the omission is the design.
+- **Shed cheapest-loss-first, and never key a shed on punctuation.** The row-1 ladder
+  drops the derived burn, then the style, then churn, then the worktree suffix, then
+  spend, then the config group — and only then trims the branch, by exactly the
+  overflow. A previous implementation detected the burn rate by matching a literal
+  `" ("`; dropping the parens made it silently stop matching and shed the whole cost
+  member, taking the total with it. **Detect the burn by its unit (`/h`).**
 - **The telem-tag chip duplicates the toolkit hook's detection on purpose.** It answers
   the same question as `toolkit/scripts/hooks/project-telem-tag-check.sh` in agent-skills
   (does this repo carry a `project.name=` OTEL attribute — live env, then
@@ -169,10 +183,13 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   `run.sh` — change one and check the other.
 - **Bash 3.2 only.** No associative arrays, no `${var^^}`, no `mapfile`. The scripts use
   parallel indexed arrays and `tr` for case-folding on purpose — keep new code 3.2-safe so
-  it runs on macOS system bash.
+  it runs on macOS system bash. C-style `for ((...))` is fine; `rep()` builds repeated
+  glyphs with one because bash has no string multiplication and `printf %*s` pads with
+  spaces only.
 - **A statusline must never fail.** `statusline.sh` ends with `exit 0`, and missing JSON
   fields degrade to a dropped segment rather than an error. Preserve that: a non-zero exit
   or stderr noise leaks into Claude Code's UI.
-- **`COLUMNS` chrome margin.** Bars fill the pane minus `CHROME_MARGIN` (default 8) so they
-  don't overrun Claude's own UI hints and force a wrap. Tune with
+- **`COLUMNS` chrome margin.** The panel fills the pane minus `CHROME_MARGIN` (default 8)
+  so it doesn't overrun Claude's own UI hints and force a wrap — which for a frame means
+  the box visibly breaks, not just an ugly line. Tune with
   `CLAUDE_STATUSLINE_CHROME_MARGIN`.
