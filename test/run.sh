@@ -7,15 +7,11 @@
 # Most cases render in a throwaway NON-git temp dir so the git segments stay
 # empty and output is fully determined by the payload + env (the process pwd,
 # not the payload, drives git detection). Separate throwaway repos exercise
-# branch truncation, the full set of working-tree counters, and telemetry
-# detection.
+# branch truncation, the full set of working-tree counters, and links.
 #
 # Determinism: HOME is pinned off-tree so dir_display never abbreviates to '~',
 # resets_at is a far-future sentinel so "time left" pins to the full window and
-# cancels out the real clock, COLUMNS is fixed per case, and
-# OTEL_RESOURCE_ATTRIBUTES is pinned empty so the coverage tag answers to the
-# fixture alone — not to whether the session running the suite is itself tagged
-# (this repo is, CI isn't, and that would otherwise flip every git golden).
+# cancels out the real clock, and COLUMNS is fixed per case.
 #
 # THE load-bearing invariant is geometry: the panel is a frame, and a frame whose
 # rules and content rows disagree by even one column is visibly broken. Every
@@ -50,7 +46,6 @@ run_sl() {
   COLUMNS=$1 HOME=/home/tester COLORTERM=truecolor TERM=xterm-256color \
     NO_COLOR='' CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' \
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE='' CLAUDE_STATUSLINE_CHROME_MARGIN='' \
-    OTEL_RESOURCE_ATTRIBUTES='' CLAUDE_STATUSLINE_HIDE_TELEM='' \
     bash "$SCRIPT" <<< "$2"
 }
 
@@ -109,8 +104,8 @@ P_CTX_OVER='{'"$DIR"',"context_window":{"used_percentage":88,"total_input_tokens
 P_COST='{'"$DIR"','"$CTX"',"model":{"display_name":"Opus 4.8"},"cost":{"total_cost_usd":12.34,"total_duration_ms":600000},'"$RL"'}'
 
 NONGIT=$(mktemp -d)
-GITREPO="" COUNTERS="" BARE="" CLONE="" TELEMREPO=""
-trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$TELEMREPO"' EXIT
+GITREPO="" COUNTERS="" BARE="" CLONE="" REPO=""
+trap 'rm -rf "$NONGIT" "$GITREPO" "$COUNTERS" "$BARE" "$CLONE" "$REPO"' EXIT
 cd "$NONGIT" || exit 2
 
 # ── Snapshots (non-git) ──────────────────────────────────────────────────────
@@ -159,7 +154,7 @@ c=1
 case "$l2" in '│ '*' │') case "$l4" in '│ '*' │') c=0 ;; esac ;; esac
 assert "frame: both content rows sit inside verticals" "$c"
 
-# ── The top rule carries identity: the repo, and the coverage verdict ───────
+# ── The top rule carries identity: the repo ─────────────────────────────────
 case "$l1" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
 assert "title: the repo name renders in the top rule" "$c"
 # ...and not in the content rows, which would be saying it twice.
@@ -216,7 +211,7 @@ case "$(run_sl 120 "$P_CTX_OVER" | sed -n 4p)" in *"${esc}[1m${esc}[31mCTX"*) c=
 assert "autocompact: CTX goes bold red once past the threshold" "$c"
 # The override has to move the escalation, or it is only decorative.
 over=$(COLUMNS=120 HOME=/home/tester COLORTERM=truecolor TERM=xterm-256color NO_COLOR='' \
-  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 OTEL_RESOURCE_ATTRIBUTES='' \
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 \
   bash "$SCRIPT" <<< "$P_CTX_CALM" | sed -n 4p)
 case "$over" in *"${esc}[33mCTX"* | *"${esc}[1m${esc}[31mCTX"*) c=0 ;; *) c=1 ;; esac
 assert "autocompact: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE moves the escalation" "$c"
@@ -278,7 +273,7 @@ assert "shed: effort outlives the output style" "$((1 - style_first))"
 case "$out_color" in *"${esc}["*) c=0 ;; *) c=1 ;; esac
 assert "color: emits ANSI by default" "$c"
 
-out_nocolor=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 OTEL_RESOURCE_ATTRIBUTES='' \
+out_nocolor=$(COLUMNS=120 HOME=/home/tester NO_COLOR=1 \
   bash "$SCRIPT" <<< "$P_NORMAL")
 case "$out_nocolor" in *"${esc}["*) c=1 ;; *) c=0 ;; esac
 assert "NO_COLOR: emits no ANSI" "$c"
@@ -290,7 +285,7 @@ while IFS= read -r _len; do [ "$_len" -eq 112 ] || nc_bad=1; done <<< "$(printf 
 assert "NO_COLOR: geometry is unchanged" "$([ -z "$nc_bad" ] && echo 0 || echo 1)"
 
 out_256=$(COLUMNS=120 HOME=/home/tester COLORTERM='' TERM=xterm-256color \
-  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL")
+  bash "$SCRIPT" <<< "$P_NORMAL")
 case "$out_256" in *"${esc}[38;2;"*) c=1 ;; *) c=0 ;; esac
 assert "256-color: no truecolor escapes without COLORTERM" "$c"
 case "$out_256" in *"${esc}[38;5;"*) c=0 ;; *) c=1 ;; esac
@@ -422,124 +417,30 @@ fi
 
 cd "$NONGIT" || exit 2
 
-# ── Coverage tag ─────────────────────────────────────────────────────────────
-# The chip reads "tagged" when the repo carries a project.name OTEL attribute and
-# "untagged" when it doesn't (so its usage lands in the dashboard as "(untagged)").
-# Detection mirrors the toolkit SessionStart hook, and every input it reads is
-# asserted here — live env, the repo's checked-in settings, its local override, a
-# settings file that exists but carries no tag (the one path that actually forks
-# jq), the opt-out, and the non-git case.
-#
-# Both states are asserted POSITIVELY on purpose: an inverted test would pass on a
-# chip that never renders at all, and this chip has to stay in agreement with a
-# hook in another repo — exactly the kind of agreement that rots quietly.
-TELEMREPO=$(mktemp -d)
-(cd "$TELEMREPO" && git init -q) > /dev/null 2>&1 || {
-  printf 'FAIL     telem fixture setup\n'
+# ── No coverage chip ─────────────────────────────────────────────────────────
+# The top rule used to say whether the repo carried a project.name OTEL attribute.
+# Claude Code now attributes usage per repo natively (OTEL_METRICS_INCLUDE_REPOSITORY),
+# so that chip was dropped. Assert it stays gone, in both of the states that used
+# to render it: a bare repo, and one whose env carries the old attribute.
+REPO=$(mktemp -d)
+(cd "$REPO" && git init -q) > /dev/null 2>&1 || {
+  printf 'FAIL     repo fixture setup\n'
   FAIL=$((FAIL + 1))
 }
-cd "$TELEMREPO" || exit 2
-P_TELEM='{"workspace":{"current_dir":"/work/proj/claude-statusline"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
-
-# The tag lives in the TOP RULE, so that is where it is looked for.
-chip_is() {
-  local rule
-  rule=$(run_sl 120 "$P_TELEM" | strip_ansi | sed -n 1p)
-  case "$1:$rule" in
-    'tagged:'*' tagged '*) return 0 ;;
-    'untagged:'*' untagged '*) return 0 ;;
-    'none:'*'tagged'*) return 1 ;;
-    'none:'*) return 0 ;;
-  esac
-  return 1
-}
-
-chip_is untagged
-assert "telem: untagged in a git repo with no attribute" "$?"
-
-mkdir -p "$TELEMREPO/.claude"
-TAG='{"env":{"OTEL_RESOURCE_ATTRIBUTES":"project.name=org/repo"}}'
-printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
-chip_is tagged
-assert "telem: tagged when .claude/settings.json carries project.name" "$?"
-
-printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.json"
-chip_is untagged
-assert "telem: settings.json without project.name still counts as untagged" "$?"
-
-printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
-chip_is tagged
-assert "telem: tagged when settings.local.json carries project.name" "$?"
-
-# Claude Code merges settings.local.json OVER settings.json, so a local override
-# that replaces the attribute without a project.name really is untagged.
-printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.json"
-printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":"service.name=x"}}' > "$TELEMREPO/.claude/settings.local.json"
-chip_is untagged
-assert "telem: settings.local.json overrides the repo attribute" "$?"
-
-printf '%s\n' '{"env":{"SOMETHING_ELSE":"1"}}' > "$TELEMREPO/.claude/settings.local.json"
-chip_is tagged
-assert "telem: an unrelated local override leaves the repo tag standing" "$?"
-
-# An EXPLICITLY emptied override is defined-but-empty, which clears the tag.
-printf '%s\n' '{"env":{"OTEL_RESOURCE_ATTRIBUTES":""}}' > "$TELEMREPO/.claude/settings.local.json"
-chip_is untagged
-assert "telem: an explicitly-emptied local override clears the tag" "$?"
-
-# A malformed settings.json must not mask a valid tag in the local override.
-printf '%s\n' "$TAG" > "$TELEMREPO/.claude/settings.local.json"
-printf '%s\n' '{ not json' > "$TELEMREPO/.claude/settings.json"
-chip_is tagged
-assert "telem: malformed settings.json doesn't mask settings.local.json" "$?"
-
-rm -f "$TELEMREPO/.claude/settings.local.json"
-chip_is untagged
-assert "telem: malformed settings.json alone reads as untagged" "$?"
-rm -f "$TELEMREPO/.claude/settings.json"
-
-# Live env, no settings file — how a tagged repo actually renders under Claude
-# Code, which exports the merged attribute into the statusline's environment.
-out_tagged=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
-  OTEL_RESOURCE_ATTRIBUTES='project.name=org/repo' bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi | sed -n 1p)
-case "$out_tagged" in *' tagged '*) c=0 ;; *) c=1 ;; esac
-assert "telem: tagged when OTEL_RESOURCE_ATTRIBUTES is set in the env" "$c"
-
-# Both states link to the dashboard, so the OSC8 target must survive on each.
+cd "$REPO" || exit 2
+P_REPO='{"workspace":{"current_dir":"/work/proj/claude-statusline"},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
 for _st in '' 'project.name=org/repo'; do
-  out_link=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_HIDE_TELEM='' \
-    CMUX_SURFACE_ID='' CMUX_BUNDLE_ID='' OTEL_RESOURCE_ATTRIBUTES="$_st" \
-    bash "$SCRIPT" <<< "$P_TELEM")
-  case "$out_link" in *'telem.thegnar.info'*) c=0 ;; *) c=1 ;; esac
+  _rule=$(OTEL_RESOURCE_ATTRIBUTES="$_st" run_sl 120 "$P_REPO" | strip_ansi | sed -n 1p)
+  case "$_rule" in *'tagged'*) c=1 ;; *) c=0 ;; esac
   [ "$c" -ne 0 ] && break
 done
-assert "telem: the chip links to the dashboard in both states" "$c"
-
-out_optout=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
-  CLAUDE_STATUSLINE_HIDE_TELEM=1 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_optout" in *'tagged'*) c=1 ;; *) c=0 ;; esac
-assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=1 suppresses the chip" "$c"
-
-# Unset and 0 both mean "show" — a bare -n test would invert the 0 case.
-out_hide0=$(COLUMNS=120 HOME=/home/tester OTEL_RESOURCE_ATTRIBUTES='' \
-  CLAUDE_STATUSLINE_HIDE_TELEM=0 bash "$SCRIPT" <<< "$P_TELEM" | strip_ansi)
-case "$out_hide0" in *'untagged'*) c=0 ;; *) c=1 ;; esac
-assert "telem: CLAUDE_STATUSLINE_HIDE_TELEM=0 still shows the chip" "$c"
-
-# Suppressing the chip must not disturb the frame.
-hide_bad=""
-while IFS= read -r _len; do [ "$_len" -eq 112 ] || hide_bad=1; done <<< "$(printf '%s\n' "$out_optout" | vislen)"
-assert "telem: suppressing the chip leaves the geometry intact" "$([ -z "$hide_bad" ] && echo 0 || echo 1)"
-
+assert "top rule: no telemetry chip, with or without project.name" "$c"
 cd "$NONGIT" || exit 2
-out_nongit=$(run_sl 120 "$P_NORMAL" | strip_ansi | sed -n 1p)
-case "$out_nongit" in *'tagged'*) c=1 ;; *) c=0 ;; esac
-assert "telem: no chip at all outside a git repo" "$c"
 
 # ── Links ────────────────────────────────────────────────────────────────────
 # Inside a repo: the remote (and therefore every link target) is only resolved
 # when the process pwd is a working tree, so these cannot run from NONGIT.
-cd "$TELEMREPO" || exit 2
+cd "$REPO" || exit 2
 P_LINK='{"workspace":{"current_dir":"/work/proj/x","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
 linked=$(run_sl 120 "$P_LINK")
 case "$linked" in *"${esc}]8;;https://github.com/TheGnarCo/claude-statusline"*) c=0 ;; *) c=1 ;; esac
@@ -551,7 +452,7 @@ case "$linked" in *"${esc}[24m"*) c=0 ;; *) c=1 ;; esac
 assert "links: the underline is closed with SGR 24" "$c"
 
 cmuxed=$(COLUMNS=120 HOME=/home/tester CMUX_SURFACE_ID=surface-1 \
-  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_LINK")
+  bash "$SCRIPT" <<< "$P_LINK")
 case "$cmuxed" in *"${esc}]8;;"*) c=1 ;; *) c=0 ;; esac
 assert "links: cmux gets no OSC8 escape" "$c"
 case "$cmuxed" in *'claude-statusline'*) c=0 ;; *) c=1 ;; esac
@@ -574,13 +475,12 @@ run_cached() { # run_cached <tmpdir> <session-payload> [extra-env-assignments...
   local td=$1 payload=$2
   shift 2
   env TMPDIR="$td" COLUMNS=120 HOME=/home/tester COLORTERM=truecolor \
-    NO_COLOR='' CMUX_SURFACE_ID='' OTEL_RESOURCE_ATTRIBUTES='' \
-    CLAUDE_STATUSLINE_HIDE_TELEM='' CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 \
+    NO_COLOR='' CMUX_SURFACE_ID='' CLAUDE_STATUSLINE_NO_UPDATE_CHECK=1 \
     "$@" bash "$SCRIPT" <<< "$payload"
 }
 
 # A render inside a repo writes exactly one entry, named for the session.
-cd "$TELEMREPO" || exit 2
+cd "$REPO" || exit 2
 rm -rf "${CACHEDIR:?}/claude-statusline"
 run_cached "$CACHEDIR" "$P_SESS" > /dev/null 2>&1
 entries=$(find "$CACHEDIR/claude-statusline" -type f 2> /dev/null | wc -l | tr -d ' ')
@@ -767,15 +667,14 @@ done
 assert "fields: neither new cell disturbs the geometry" "$([ -z "$fb" ] && echo 0 || echo 1)"
 
 # ── Self-update chip ─────────────────────────────────────────────────────────
-# "There is a newer claude-statusline" in the top rule, beside coverage. This is
+# "There is a newer claude-statusline" in the top rule, beside the repo. This is
 # the cell plugin users depend on: `/gnar-statusline` COPIES the released scripts
 # into ~/.claude/, so a published release reaches them only when they re-run that
 # command, and nothing else tells them a release happened.
 #
 # Every case pre-seeds the cache, so the suite makes no network request.
-# Inside a repo: the coverage tag only renders in a working tree, and these
-# assertions are about the chip sitting BESIDE it.
-cd "$TELEMREPO" || exit 2
+# Inside a repo, so the title these assertions measure against is the real one.
+cd "$REPO" || exit 2
 SELF=$(mktemp -d)
 mkdir -p "$SELF/claude-statusline"
 P_SELF='{"session_id":"self-1","workspace":{"current_dir":"/work/proj/x","repo":{"host":"github.com","owner":"TheGnarCo","name":"claude-statusline"}},'"$CTX"',"model":{"display_name":"Opus 4.8"}}'
@@ -804,9 +703,6 @@ assert "self-update: the version matches the newest CHANGELOG heading" "$c"
 seed_release "99.0.0"
 case "$(rule_of)" in *'update v99.0.0'*) c=0 ;; *) c=1 ;; esac
 assert "self-update: a newer release raises the chip in the top rule" "$c"
-# ...beside coverage, not instead of it.
-case "$(rule_of)" in *'update v99.0.0'*'tagged'*) c=0 ;; *) c=1 ;; esac
-assert "self-update: the chip sits beside the coverage tag" "$c"
 
 seed_release "$SELF_VER"
 case "$(rule_of)" in *'update v'*) c=1 ;; *) c=0 ;; esac
@@ -823,11 +719,11 @@ assert "self-update: a vX.Y.Z tag name compares correctly" "$c"
 # The chip sheds before the repo name is squeezed: a name truncated to make room
 # for "there is a newer version" is a bad trade.
 seed_release "99.0.0"
-narrow_rule=$(run_cached "$SELF" "$P_SELF" COLUMNS=56 CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | sed -n 1p)
+narrow_rule=$(run_cached "$SELF" "$P_SELF" COLUMNS=46 CLAUDE_STATUSLINE_NO_UPDATE_CHECK=0 | strip_ansi | sed -n 1p)
 case "$narrow_rule" in *'update v'*) c=1 ;; *) c=0 ;; esac
 assert "self-update: the chip sheds on a narrow pane" "$c"
-case "$narrow_rule" in *'tagged'*) c=0 ;; *) c=1 ;; esac
-assert "self-update: ...and coverage survives it" "$c"
+case "$narrow_rule" in *'TheGnarCo/claude-statusline'*) c=0 ;; *) c=1 ;; esac
+assert "self-update: ...and the repo name survives it whole" "$c"
 
 # Geometry, with the chip present.
 seed_release "99.0.0"
@@ -844,7 +740,7 @@ cd "$NONGIT" || exit 2
 
 # ── Chrome margin ────────────────────────────────────────────────────────────
 wide_margin=$(COLUMNS=120 HOME=/home/tester CLAUDE_STATUSLINE_CHROME_MARGIN=0 \
-  OTEL_RESOURCE_ATTRIBUTES='' bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
+  bash "$SCRIPT" <<< "$P_NORMAL" | strip_ansi | sed -n 1p | vislen)
 assert "margin: CHROME_MARGIN=0 fills the pane edge to edge" \
   "$([ "$wide_margin" -eq 120 ] && echo 0 || echo 1)"
 

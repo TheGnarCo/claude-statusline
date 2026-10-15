@@ -7,7 +7,7 @@ subagent statusline, each a single bash script. No Rust, no extra binaries — j
 ## What it shows
 
 ```
-╭─ TheGnarCo/claude-statusline ────────────────────────────────────────────────────────────────────── untagged ╮
+╭─ TheGnarCo/claude-statusline ────────────────────────────────────────────────────────────────────────────────╮
 │ @work ^3 v2 !1 +1 ?1 *1 +120/-45         │         Opus 4.8 Hi Explanatory         │         $1.23  $7.38/h  │
 ├─ USAGE ──────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ CTX ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░ 420k/1M │ 5h ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░ 73% 5h0m │ 7d ▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░ 7d0h │
@@ -18,7 +18,7 @@ subagent statusline, each a single bash script. No Rust, no extra binaries — j
 cannot drift from what the script actually prints.)*
 
 A five-line panel with two rows of content. **The top rule carries what is true of
-the whole panel** — the repo, and whether its usage is attributed in telemetry.
+the whole panel** — the repo, and an update chip when a newer release exists.
 **Row 1 is what this session is**; **row 2 is what it is spending**. Both content
 rows are divided by vertical rules in burnt Gnar orange, the same colour as the
 frame.
@@ -97,21 +97,11 @@ is a different and wrong statement. On a narrow pane the bars shrink instead.
 
 ### Links
 
-The repo title, the branch, and the coverage tag are OSC8 hyperlinks, rendered
+The repo title and the branch are OSC8 hyperlinks, rendered
 **underlined** so you can tell what is clickable before you try it; ⌘-click them
 in a supporting terminal. Under cmux the escape is dropped (it miscounts the
 zero-width payload) and the underline goes with it — the text stays, the promise
 of a link doesn't.
-
-### Coverage
-
-`tagged` / `untagged` in the top rule says whether this repo's Claude Code usage is
-attributed to a project in [telem.thegnar.info](https://telem.thegnar.info) (a
-`project.name` OTEL attribute). Untagged usage lands there under *(untagged)* — run
-`/toolkit:project-telem-tag` in the repo to fix it. Both states render and both
-link to the dashboard; the untagged one takes the **bright** orange, which is
-reserved for it and used nowhere else, precisely so it can still raise an alarm
-against orange chrome.
 
 ## Requirements
 
@@ -172,7 +162,6 @@ timer keeps them live. Omit it to update only on events.
 | --- | --- |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Autocompact threshold, 1–100. Defaults to 80. Drives the CTX label's escalation. |
 | `CLAUDE_STATUSLINE_CHROME_MARGIN` | Columns held back from the pane's right edge so the panel doesn't overrun Claude's own UI hints. Defaults to 8; `0` fills edge to edge. |
-| `CLAUDE_STATUSLINE_HIDE_TELEM` | `1` hides the coverage tag (for anyone not sending OTEL telemetry, where it has nothing to say). Unset and `0` both mean show. |
 | `CLAUDE_STATUSLINE_GIT_CACHE_TTL` | Seconds a gathered git state stays warm. Defaults to 3. `0` re-gathers every render. |
 | `CLAUDE_STATUSLINE_NO_CACHE` | `1` disables caching entirely. |
 | `CLAUDE_STATUSLINE_NO_UPDATE_CHECK` | `1` disables both daily version checks — the only things here that touch the network. |
@@ -236,7 +225,7 @@ to a broken panel.
 
 Two things can be out of date, and each gets a chip:
 
-- **`update v2.1.0`** in the top rule, beside coverage — a newer
+- **`update v2.1.0`** in the top rule, opposite the repo name — a newer
   **claude-statusline** release exists. Click it for the releases page.
 - **`↑2.1.240`** on row 1 — the **Claude Code** you're running is behind.
 
@@ -281,9 +270,8 @@ rather than unpredictably.
 - The 5h/7d meters appear only once the session has made a request that populates
   the rate-limit fields.
 - Apart from the cache above, the statusline writes nothing. Every cell renders
-  from the JSON Claude Code passes on stdin, except the coverage tag, which also
-  reads the repo's `.claude/settings.json` — and only when the attribute isn't
-  already in the environment.
+  from the JSON Claude Code passes on stdin; nothing reads the repo's settings
+  files.
 
 ## Tests
 
