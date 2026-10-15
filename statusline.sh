@@ -15,9 +15,9 @@
 #   ╰─────────────────────────────────────────────────────────╯
 #
 # The top rule carries what is true of the whole panel — the repo, and an
-# update chip when a newer statusline exists. Row 1 is what this session IS; row 2 is
-# what it is spending. Groups ride on vertical rules rather than brackets, and
-# both the frame and those rules take the burnt Gnar orange.
+# update chip when a newer statusline exists. Row 1 is what this session IS;
+# row 2 is what it is spending. Groups ride on vertical rules rather than
+# brackets, and both the frame and those rules take the burnt Gnar orange.
 #
 # Needs Unicode block elements and box drawing. There is NO ASCII fallback: this
 # replaced a pure-ASCII output that every version through v1.2.0 sold as a
@@ -734,7 +734,8 @@ elif [ -n "$repo_name" ]; then
 else
   title_txt=$dir_disp
 fi
-# The top rule's right side: an update chip when one is due. The chip sheds before the repo name is squeezed — a name truncated to make room for
+# The top rule's right side: an update chip when one is due. The chip sheds
+# before the repo name is squeezed — a name truncated to make room for
 # "there is a newer version" is a bad trade, since the name is what identifies
 # the pane and the chip will still be there tomorrow.
 TITLE_MIN=18
