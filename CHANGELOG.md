@@ -5,6 +5,22 @@ installs the latest **published release** and `install.sh` symlinks a clone, so 
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
+## v2.0.2
+
+Drops the `tagged` / `untagged` telemetry chip from the top rule, and the
+`CLAUDE_STATUSLINE_HIDE_TELEM` knob that hid it.
+
+The chip said whether the repo carried a `project.name` OTEL resource attribute, which
+is how gnar-telem used to attribute spend per project. Claude Code now does that
+natively: `OTEL_METRICS_INCLUDE_REPOSITORY=1`, set org-wide in managed settings, adds
+the repo to every metric. A repo with no `project.name` is attributed correctly, so the
+chip would have read `untagged` everywhere — a false warning in bright orange
+(TheGnarCo/gnar-telem#77, #31).
+
+The top rule now carries the repo name and, when one is due, the update chip. With the
+chip gone, nothing reads the repo's `.claude/settings*.json` any more. Setting
+`CLAUDE_STATUSLINE_HIDE_TELEM` is harmless; it is simply ignored.
+
 ## v2.0.1
 
 Drops the `api N%` cell from row 1.

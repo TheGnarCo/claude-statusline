@@ -8,14 +8,14 @@
 #
 # Reads the Claude Code statusline JSON on stdin and emits a five-line panel:
 #
-#   ╭─ owner/repo ──────────────────────────────────── tagged ╮
+#   ╭─ owner/repo ────────────────────────────────────────────╮
 #   │ @branch sigils churn │ model effort │ $cost $burn       │
 #   ├─ USAGE ─────────────────────────────────────────────────┤
 #   │ CTX ▒▒░░ 420k/1M │ 5h ▒▒▒░ 5h0m │ 7d ▒▒░░ 2d4h          │
 #   ╰─────────────────────────────────────────────────────────╯
 #
-# The top rule carries what is true of the whole panel — the repo, and whether
-# its usage is attributed in telemetry. Row 1 is what this session IS; row 2 is
+# The top rule carries what is true of the whole panel — the repo, and an
+# update chip when a newer statusline exists. Row 1 is what this session IS; row 2 is
 # what it is spending. Groups ride on vertical rules rather than brackets, and
 # both the frame and those rules take the burnt Gnar orange.
 #
@@ -38,7 +38,7 @@
 # `test/run.sh` asserts it matches the newest heading in CHANGELOG.md, so a
 # release that forgets to bump it fails CI rather than shipping a statusline
 # that reports itself as current forever.
-STATUSLINE_VERSION='2.0.1'
+STATUSLINE_VERSION='2.0.2'
 
 ESC=$(printf '\033')
 BEL=$(printf '\007')
@@ -76,7 +76,7 @@ case "${COLORTERM:-}" in *truecolor* | *24bit*) TRUECOLOR=1 ;; esac
 if [ "$USE_COLOR" -eq 0 ]; then
   BOLD="" RST="" MUTED="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN=""
   UL="" UL_OFF=""
-  TELEM_ON="" TELEM_OFF=""
+  FRAME_HUE=""
   CTX_HUE="" FIVE_HUE="" SEVEN_HUE=""
 else
   BOLD="${ESC}[1m"
@@ -91,12 +91,7 @@ else
   MAGENTA="${ESC}[35m"
   CYAN="${ESC}[36m"
   if [ "$TRUECOLOR" -eq 1 ]; then
-    # Two oranges, and which is which is load-bearing. The BURNT one is chrome:
-    # frame, vertical rules, and the covered tag. The BRIGHT one is spent on one
-    # thing only — an untagged repo. Chrome that appears on every row of every
-    # repo cannot also be a warning, so the bright shade is never used for it.
-    TELEM_ON="${ESC}[38;2;181;110;58m"  # frame, rules, covered tag (burnt orange)
-    TELEM_OFF="${ESC}[38;2;255;160;60m" # untagged tag ONLY      (bright orange)
+    FRAME_HUE="${ESC}[38;2;181;110;58m" # frame, rules, title (burnt orange)
     # One hue per meter, flat rather than ramped: the three bars are already
     # distinguished by hue, so a gradient inside each would fight that.
     CTX_HUE="${ESC}[38;2;158;86;224m"   # context   (purple)
@@ -104,8 +99,7 @@ else
     SEVEN_HUE="${ESC}[38;2;77;143;214m" # 7d window (blue)
   else
     # 256-color approximations for terminals without truecolor.
-    TELEM_ON="${ESC}[38;5;130m"
-    TELEM_OFF="${ESC}[38;5;214m"
+    FRAME_HUE="${ESC}[38;5;130m"
     CTX_HUE="${ESC}[38;5;141m"
     FIVE_HUE="${ESC}[38;5;179m"
     SEVEN_HUE="${ESC}[38;5;68m"
@@ -568,66 +562,6 @@ conflict=$conflict
 stash=$stash"
 fi
 
-# ── Telemetry tag (project.name OTEL attribute) ─────────────────────────────
-# Gnar attributes Claude Code usage per project through a `project.name=` entry in
-# OTEL_RESOURCE_ATTRIBUTES, set in the repo's own .claude/settings.json (that's what
-# the toolkit plugin's /toolkit:project-telem-tag writes). A repo without it lands
-# in the dashboard as "(untagged)" — a silent gap nobody notices until they go
-# looking for that project's spend — so line 1 reports which side of that this repo
-# is on: `telem_state` is "tagged", "untagged", or "" for don't-render.
-#
-# Detection mirrors the toolkit SessionStart hook (project-telem-tag-check.sh) so
-# the chip and the nudge can never disagree: live env first, then the repo's
-# checked-in settings, then its local override. Only inside a git repo — outside
-# one there's no project to tag, so the cell has nothing to say.
-#
-# Cheap by construction, because this runs on every refresh: when the repo IS
-# tagged Claude Code exports the attribute into our env, so the common case
-# answers from a `case` with zero I/O; when it's untagged there's usually no
-# settings file to read; a jq read happens only for a file that exists (0 files ->
-# 0 forks, the usual 1 -> 1). A jq failure (unreadable or malformed settings) yields
-# no value and so reads as untagged — the same fail-toward-nudging choice the hook
-# makes. Read per-file rather than one jq over both, because jq aborts the whole run
-# on the first parse error: a malformed settings.json would otherwise mask a valid
-# tag in settings.local.json.
-#
-# Later file wins, but only when it actually defines the attribute — that's Claude
-# Code's own env merge (settings.local.json over settings.json), so a local override
-# that replaces the attribute without a project.name correctly reads as untagged.
-# The hook takes the first match instead; the two can't disagree in practice, since
-# whenever any settings file defines the attribute Claude Code exports the merged
-# value and the env branch above answers before either file is read.
-TELEM_URL='https://telem.thegnar.info'
-# Opt-out: unset and 0 both mean "show". A bare -n test would make
-# CLAUDE_STATUSLINE_HIDE_TELEM=0 hide the chip, which is the opposite of what
-# anyone writing that means, and unlike the script's other knobs, which read values.
-telem_hidden=0
-case "$CLAUDE_STATUSLINE_HIDE_TELEM" in '' | 0) ;; *) telem_hidden=1 ;; esac
-telem_state=""
-if [ "$git_is_repo" -eq 1 ] && [ "$telem_hidden" -eq 0 ]; then
-  case "$OTEL_RESOURCE_ATTRIBUTES" in
-    *project.name=*) telem_state=tagged ;;
-    *)
-      telem_state=untagged
-      _attrs=""
-      for _settings in "$topl/.claude/settings.json" "$topl/.claude/settings.local.json"; do
-        [ -f "$_settings" ] || continue
-        # jq answers "is it defined, and to what" in one string: "=<value>" when the
-        # key is present (so an explicit "" comes back as a bare "="), and empty when
-        # it's absent or the file won't parse. A bare `// ""` couldn't tell those
-        # apart, and an explicitly-emptied local override then failed to clear the
-        # repo's tag — the chip stayed green on a session reported as untagged.
-        _v=$(jq -r '(.env // {}) as $e
-          | if ($e | has("OTEL_RESOURCE_ATTRIBUTES"))
-            then "=" + ($e.OTEL_RESOURCE_ATTRIBUTES | tostring) else "" end' \
-          "$_settings" 2> /dev/null)
-        [ -n "$_v" ] && _attrs=${_v#=}
-      done
-      case "$_attrs" in *project.name=*) telem_state=tagged ;; esac
-      ;;
-  esac
-fi
-
 # Autocompact threshold (env override, else 80).
 ac=80
 case "$CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in
@@ -693,18 +627,9 @@ pcols=$cols
 [ "$pcols" -lt 24 ] && pcols=24
 inner=$((pcols - 4)) # "│ " + content + " │"
 
-FRAME=$TELEM_ON
-SEP_D=" ${TELEM_ON}${FR_V}${RST} "
+FRAME=$FRAME_HUE
+SEP_D=" ${FRAME_HUE}${FR_V}${RST} "
 SEP_P=" ${FR_V} "
-
-# Coverage rides in the TOP RULE, opposite the repo name — the two facts that are
-# true of the whole panel rather than of this turn. Being out of the content rows
-# also means it never competes for their columns and never sheds.
-tag_d="" tag_p=""
-case "$telem_state" in
-  tagged) tag_p="tagged" tag_d="${TELEM_ON}$(osc8 "$TELEM_URL" 'tagged')${RST}" ;;
-  untagged) tag_p="untagged" tag_d="${TELEM_OFF}$(osc8 "$TELEM_URL" 'untagged')${RST}" ;;
-esac
 
 # ── Update checks ───────────────────────────────────────────────────────────
 # Two things can be out of date, and neither can be computed from stdin: Claude
@@ -809,32 +734,23 @@ elif [ -n "$repo_name" ]; then
 else
   title_txt=$dir_disp
 fi
-# The top rule's right side: an update chip when one is due, then coverage. The
-# chip sheds before the repo name is squeezed — a name truncated to make room for
+# The top rule's right side: an update chip when one is due. The chip sheds before the repo name is squeezed — a name truncated to make room for
 # "there is a newer version" is a bad trade, since the name is what identifies
 # the pane and the chip will still be there tomorrow.
 TITLE_MIN=18
 rule_right_d="" rule_right_p=""
-if [ -n "$self_chip" ] && [ "$((inner - 6 - ${#tag_p} - ${#self_chip} - 2))" -ge "$TITLE_MIN" ]; then
+if [ -n "$self_chip" ] && [ "$((inner - 6 - ${#self_chip}))" -ge "$TITLE_MIN" ]; then
   rule_right_d="${BOLD}${YELLOW}$(osc8 "$RELEASES_URL" "$self_chip")${RST}"
   rule_right_p=$self_chip
-fi
-if [ -n "$tag_p" ]; then
-  if [ -n "$rule_right_p" ]; then
-    rule_right_d="${rule_right_d}  "
-    rule_right_p="${rule_right_p}  "
-  fi
-  rule_right_d="${rule_right_d}${tag_d}"
-  rule_right_p="${rule_right_p}${tag_p}"
 fi
 
 _title_budget=$((inner - 6 - ${#rule_right_p}))
 [ "$_title_budget" -lt 8 ] && _title_budget=8
 title_txt=$(trunc_mid "$title_txt" "$_title_budget")
 if [ -n "$repo_slug" ] && [ "$title_txt" = "$repo_slug" ]; then
-  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${TELEM_ON}${repo_slug##*/}${RST}"
+  title_disp="${MUTED}${repo_slug%/*}/${BOLD}${FRAME_HUE}${repo_slug##*/}${RST}"
 else
-  title_disp="${BOLD}${TELEM_ON}${title_txt}${RST}"
+  title_disp="${BOLD}${FRAME_HUE}${title_txt}${RST}"
 fi
 [ -n "$repo_https" ] && title_disp=$(osc8 "$repo_https" "$title_disp")
 
@@ -991,7 +907,7 @@ assemble_row1() {
       [ "$((i - 1))" -lt "$rem" ] && extra=$((extra + 1))
       left=$((extra / 2))
       right=$((extra - left))
-      R1_D="${R1_D}$(rep ' ' "$((left + 1))")${TELEM_ON}${FR_V}${RST}$(rep ' ' "$((right + 1))")"
+      R1_D="${R1_D}$(rep ' ' "$((left + 1))")${FRAME_HUE}${FR_V}${RST}$(rep ' ' "$((right + 1))")"
       R1_P="${R1_P}$(rep ' ' "$((left + 1))")${FR_V}$(rep ' ' "$((right + 1))")"
     fi
     R1_D="${R1_D}${G_D[i]}"
@@ -1198,7 +1114,7 @@ content() {
 rule "$FR_TL" "$FR_TR" "$title_disp" "${#title_txt}" "$rule_right_d" "${#rule_right_p}"
 content "$R1_D" "${#R1_P}"
 
-rule "$FR_ML" "$FR_MR" "${BOLD}${TELEM_ON}USAGE${RST}" 5
+rule "$FR_ML" "$FR_MR" "${BOLD}${FRAME_HUE}USAGE${RST}" 5
 content "$R2_D" "${#R2_P}"
 printf '%s%s%s%s%s\n' "$FRAME" "$FR_BL" "$(rep "$FR_H" "$((pcols - 2))")" "$FR_BR" "$RST"
 
