@@ -635,9 +635,9 @@ SEP_P=" ${FR_V} "
 # Two things can be out of date, and neither can be computed from stdin: Claude
 # Code itself, and this statusline. Both go through one code path.
 #
-# The statusline one matters more than it looks. Plugin users never run from a
-# checkout — `/gnar-statusline` COPIES the released scripts into ~/.claude/ — so
-# a published release reaches nobody until they re-run that command, and until
+# The statusline one matters more than it looks. Most people never run from a
+# checkout: the README's install COPIES the released scripts into ~/.claude/, so
+# a published release reaches nobody until they install again, and until
 # now nothing told them a release existed. That is the same class of silent
 # staleness that let the agent panel sit broken for weeks.
 #

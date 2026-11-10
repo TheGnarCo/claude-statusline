@@ -123,27 +123,121 @@ lost, and the labels already carry that.
 
 ## Install
 
-### Via the Gnar plugin (recommended)
+**The quick way: point Claude Code at this repo.** Open Claude Code and say:
 
-Install the `toolkit` plugin from the [`gnar` marketplace](https://github.com/TheGnarCo/agent-skills)
-and run:
+> Install the statusline from https://github.com/TheGnarCo/claude-statusline
 
+The steps below are written so an agent can follow them as written. A person can run them in a
+terminal just as well. They install at **user scope**, so the statusline shows in every
+project, and re-running them is also how you update.
+
+### Steps, for an agent
+
+Install the **latest published release**, not `main`: a tag can't change under you, and `main`
+can be mid-refactor. Hardcode no version. Install both scripts, because Claude Code reads two
+separate settings: `statusLine` for the session panel and `subagentStatusLine` for the agent
+panel's rows. Don't offer to customize anything or describe the panel to the user. Link this
+README instead.
+
+**1. Resolve the latest release.**
+
+```sh
+repo=TheGnarCo/claude-statusline
+tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  "https://github.com/${repo}/releases/latest" | sed 's#.*/tag/##')
 ```
-/gnar-statusline
+
+`releases/latest` redirects to the newest release's tag page, and drafts are skipped. This needs
+neither `jq` nor `gh`. `gh release view --repo "$repo" --json tagName -q .tagName` works too if
+`gh` is signed in. `$tag` must be non-empty and contain no `/`. If it fails either check, **stop
+and say so**. Never fall back to a branch.
+
+**2. Download that release's scripts.**
+
+```sh
+tmp=$(mktemp -d)
+raw="https://raw.githubusercontent.com/${repo}/${tag}"
+curl -fsSL "${raw}/statusline.sh"          -o "$tmp/statusline.sh"
+curl -fsSL "${raw}/subagent-statusline.sh" -o "$tmp/subagent-statusline.sh"
 ```
 
-The command fetches the latest release of these scripts, backs up any existing
-statusline config, and wires `~/.claude/settings.json` for you.
+Each file must be non-empty and start with `#!/usr/bin/env bash`. A short HTML body means the
+tag or path is wrong. If either download fails, **stop**, name the failing URL and say nothing
+was changed. Never leave a partial install.
 
-### Manual
+Check that `jq` is on `PATH` (`command -v jq`). If it isn't, tell the user to install it
+(`brew install jq` on a Mac) and carry on: the scripts degrade without it rather than fail.
+
+**3. Back up what's wired now.** If `~/.claude/settings.json` exists, save its current
+`statusLine` and `subagentStatusLine` values (or `null`) to
+`~/.claude/gnar-statusline.bak.json`, with a `savedAt` timestamp:
+
+```sh
+settings="$HOME/.claude/settings.json"
+[ -f "$settings" ] && jq --arg at "$(date -u +%FT%TZ)" \
+  '{savedAt: $at, statusLine: (.statusLine // null), subagentStatusLine: (.subagentStatusLine // null)}' \
+  "$settings" > "$HOME/.claude/gnar-statusline.bak.json"
+```
+
+Tell the user what the previous values were, so they know how to go back.
+
+**4. Install and wire.**
+
+```sh
+mkdir -p "$HOME/.claude"
+prev=$(cat "$HOME/.claude/gnar-statusline.version" 2>/dev/null || true)
+install -m 0755 "$tmp/statusline.sh"          "$HOME/.claude/gnar-statusline.sh"
+install -m 0755 "$tmp/subagent-statusline.sh" "$HOME/.claude/gnar-subagent-statusline.sh"
+printf '%s\n' "$tag" > "$HOME/.claude/gnar-statusline.version"
+
+[ -f "$settings" ] || echo '{}' > "$settings"
+jq '.statusLine = {type: "command", command: "bash ~/.claude/gnar-statusline.sh", padding: 0, refreshInterval: 15}
+  | .subagentStatusLine = {type: "command", command: "bash ~/.claude/gnar-subagent-statusline.sh"}' \
+  "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"
+```
+
+Keep every other key in `settings.json`. If `jq` is missing, make the same two edits by hand.
+Keep `refreshInterval`: status lines are otherwise only redrawn on events, so the countdowns
+(`5h0m`, `2d4h`) would freeze while a session sits idle.
+
+**5. Verify.**
+
+```sh
+echo '{}' | bash "$HOME/.claude/gnar-statusline.sh" >/dev/null; echo "statusline exit=$?"
+echo '{"tasks":[{"id":"t1","name":"check","tokenCount":1000,"status":"running"}]}' |
+  bash "$HOME/.claude/gnar-subagent-statusline.sh"
+```
+
+The first must exit 0. The second must print one line like `{"id":"t1","content":"check …"}`:
+the subagent script's output is its contract, so an exit code alone proves nothing. An empty
+payload deliberately prints nothing. These scripts ship green, so a failure here means the
+download or copy went wrong. Report it rather than moving on.
+
+**6. Report back:** the release installed (and the previous one from `prev`, so an upgrade
+reads as an upgrade), the two settings wired, the backup path, and that the panel appears on
+the next refresh or new session. Mention that re-running these steps pulls whatever release is
+newest and overwrites local edits to the installed copies.
+
+### Updating
+
+The top rule shows `update vX.Y.Z` when a newer release exists. Ask Claude Code to install the
+statusline again, or rerun the steps above.
+
+### Uninstalling
+
+Restore the two keys from `~/.claude/gnar-statusline.bak.json` (or delete them from
+`~/.claude/settings.json`), then remove `~/.claude/gnar-statusline.sh`,
+`~/.claude/gnar-subagent-statusline.sh`, `~/.claude/gnar-statusline.version` and the backup.
+
+### From a clone, for working on the scripts
 
 ```sh
 git clone https://github.com/TheGnarCo/claude-statusline ~/Code/claude-statusline
 ~/Code/claude-statusline/install.sh
 ```
 
-`install.sh` symlinks both scripts into `~/.local/bin`, then add to
-`~/.claude/settings.json`:
+`install.sh` symlinks both scripts into `~/.local/bin`, so edits in the clone show up at once.
+Then add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -151,10 +245,6 @@ git clone https://github.com/TheGnarCo/claude-statusline ~/Code/claude-statuslin
   "subagentStatusLine": { "type": "command", "command": "~/.local/bin/claude-subagent-statusline" }
 }
 ```
-
-`refreshInterval` is recommended: status lines are otherwise event-driven, so the
-time-based cells (`5h0m`, `2d4h`) would freeze while the session sits idle. A 15s
-timer keeps them live. Omit it to update only on events.
 
 ## Knobs
 
@@ -229,9 +319,9 @@ Two things can be out of date, and each gets a chip:
   **claude-statusline** release exists. Click it for the releases page.
 - **`↑2.1.240`** on row 1 — the **Claude Code** you're running is behind.
 
-The first matters more than it looks. `/gnar-statusline` *copies* the released
-scripts into `~/.claude/`, so a published release reaches plugin users only when
-they re-run that command — and nothing else tells them a release happened. That's
+The first matters more than it looks. The [install](#install) *copies* the released
+scripts into `~/.claude/`, so a published release reaches people only when
+they install again — and nothing else tells them a release happened. That's
 the same silent staleness that let the subagent statusline sit broken for weeks.
 
 **These are the only cells that make a network request** — nothing else in this

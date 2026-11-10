@@ -26,44 +26,30 @@ The `README.md` is the user-facing reference for what each cell means.
 
 ## How it's consumed
 
-Two paths, and **both install a copy** — nothing here is read live from a checkout:
+Two paths, and **both install a copy**. Nothing here is read live from a checkout:
 
-1. **The Gnar plugin.** [`TheGnarCo/agent-skills`](https://github.com/TheGnarCo/agent-skills)
-   ships a `/gnar-statusline` command in its `toolkit` plugin. It resolves this repo's
-   **latest GitHub release** at install time (via the `releases/latest` redirect) and copies
-   the scripts into `~/.claude/`. Users are never on `main`, and **no version is pinned on
-   that side** — agent-skills `#426` deleted the hardcoded tag.
-2. **`install.sh`**, for people who don't run the plugin — symlinks a local clone into
+1. **The README's [Install](./README.md#install) steps.** People point Claude Code at this repo
+   and ask it to install the statusline. The agent follows those steps: it resolves the
+   **latest GitHub release** (the `releases/latest` redirect), copies both scripts into
+   `~/.claude/`, wires `statusLine` and `subagentStatusLine`, and verifies. Users are never on
+   `main`, and no version is pinned anywhere. This replaced the `/gnar-statusline` command
+   that agent-skills' `toolkit` plugin used to ship, which retired with toolkit. **The README
+   is now the installer**, so treat its Install section as code: a change to the file names,
+   the settings keys or the subagent output contract must update those steps in the same PR.
+2. **`install.sh`**, for working on the scripts: it symlinks a local clone into
    `~/.local/bin`.
 
 Practical consequences:
 
-- **Publishing a release IS the delivery — there is no second gate.** A merge to `main`
-  reaches nobody; publishing a GitHub release reaches every plugin user on their next
-  `/gnar-statusline` run, with nothing to review or bump in agent-skills. The release is
-  therefore the whole review gate, so cut one deliberately — and don't try to make the
-  plugin track `main`. A **draft** release delivers nothing: the `releases/latest` redirect
-  skips drafts.
-- **The plugin's command is install-only and does NOT describe this layout.** It fetches the
-  released scripts, wires both keys, verifies, and links this repo for what they render — it
-  says outright "Don't restate its contents here or narrate the segments to the user". There
-  is no Customize mode and no segment inventory: agent-skills `#422`/`#424` removed both, and
-  its changelog links a `v1.0.0...v1.1.0` compare rather than re-listing cells. So a layout
-  change here needs **nothing rewritten and nothing bumped** on that side.
-
-  This entry has twice claimed work was owed to agent-skills that wasn't — first a Customize
-  mode that `#424` had deleted, then a version pin that `#426` had deleted — and both times
-  the stale claim was repeated as outstanding debt across several PRs here before anyone
-  checked. Check rather than trust it:
-
-  ```sh
-  gh api repos/TheGnarCo/agent-skills/contents/toolkit/commands/gnar-statusline.md \
-    --jq .content | base64 -d |
-    grep -niE 'customize|counters group|vim-mode chip|model group|VERSION='
-  ```
-
-  Nothing back means the command is both layout-agnostic and version-agnostic: a release
-  here is the entire delivery, and agent-skills needs no PR.
+- **Publishing a release IS the delivery, and there is no second gate.** A merge to `main`
+  reaches nobody. Publishing a GitHub release reaches everyone the next time they install,
+  with nothing to bump anywhere else. The release is the whole review gate, so cut one
+  deliberately, and don't point the install steps at `main`. A **draft** release delivers
+  nothing: the `releases/latest` redirect skips drafts.
+- **The install steps don't describe the layout.** They install, verify and link the README
+  for what the panel shows, so a layout change needs no edit to them. The verify step does
+  depend on the subagent script's output (`{"id","content"}` per task), so a change to that
+  contract does.
 
 ## Relationship to alxjrvs/claude-statusline
 
@@ -158,8 +144,8 @@ Run `shfmt -w -i 2 -ci -sr` before committing — those flags are the canonical 
   shed the whole cost member, taking the total with it. **Detect the burn by its
   unit (`/h`).**
 - **There is no telemetry chip, on purpose.** Up to v2.0.1 the top rule said `tagged` /
-  `untagged` for a `project.name` OTEL attribute, mirroring a toolkit hook in
-  agent-skills. Claude Code now attributes usage per repo natively
+  `untagged` for a `project.name` OTEL attribute, mirroring a hook agent-skills' toolkit
+  plugin used to ship. Claude Code now attributes usage per repo natively
   (`OTEL_METRICS_INCLUDE_REPOSITORY=1`, set org-wide in managed settings), so the chip
   would read `untagged` on every correctly attributed repo. It and
   `CLAUDE_STATUSLINE_HIDE_TELEM` are gone, and with them the only cell that read the

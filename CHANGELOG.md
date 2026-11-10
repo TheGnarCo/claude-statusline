@@ -1,7 +1,7 @@
 # Changelog
 
-What each **tag** ships. Tags are the only thing that reaches anyone: `/gnar-statusline`
-installs the latest **published release** and `install.sh` symlinks a clone, so a merge to
+What each **tag** ships. Tags are the only thing that reaches anyone: the README's install
+steps fetch the latest **published release** and `install.sh` symlinks a clone, so a merge to
 `main` changes nothing for users — and publishing a release changes it for all of them, on
 their next install, with nothing to bump anywhere else.
 
