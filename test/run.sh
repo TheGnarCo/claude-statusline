@@ -668,9 +668,9 @@ assert "fields: neither new cell disturbs the geometry" "$([ -z "$fb" ] && echo 
 
 # ── Self-update chip ─────────────────────────────────────────────────────────
 # "There is a newer claude-statusline" in the top rule, beside the repo. This is
-# the cell plugin users depend on: `/gnar-statusline` COPIES the released scripts
-# into ~/.claude/, so a published release reaches them only when they re-run that
-# command, and nothing else tells them a release happened.
+# the cell most people depend on: the README's install COPIES the released scripts
+# into ~/.claude/, so a published release reaches them only when they install
+# again, and nothing else tells them a release happened.
 #
 # Every case pre-seeds the cache, so the suite makes no network request.
 # Inside a repo, so the title these assertions measure against is the real one.
